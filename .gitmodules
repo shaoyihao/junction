@@ -1,10 +1,10 @@
 [submodule "lib/shenango"]
 	path = lib/caladan
-	url = https://github.com/shenango/caladan.git
+	url = https://github.com/shaoyihao/caladan.git
 	ignore = dirty
 [submodule "lib/glibc"]
 	path = lib/glibc
-	url = https://sourceware.org/git/glibc.git
+	url = https://github.com/shaoyihao/glibc
 	ignore = dirty
 [submodule "lib/FlameGraph"]
 	path = lib/FlameGraph

@@ -413,6 +413,12 @@ long usys_renameat2(int olddirfd, const char *oldpath, int newdirfd,
 }
 
 long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
+  if (strcmp(pathname, "GORUNTIME") == 0)
+  {
+    return thread_yield_waitIO();
+  }
+  else
+  {
   Process &p = myproc();
   Status<Entry> entry = LookupEntry(p, dirfd, pathname);
   if (!entry) return MakeCError(entry);
@@ -425,6 +431,7 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
   }
   FileTable &ftbl = p.get_file_table();
   return ftbl.Insert(std::move(*f), (flags & kFlagCloseExec) > 0);
+  }
 }
 
 long usys_open(const char *pathname, int flags, mode_t mode) {
