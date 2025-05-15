@@ -334,6 +334,8 @@ Status<void> InitFs(
     const std::vector<std::pair<std::string, std::string>> &linux_mount_points,
     const std::vector<std::string> &mem_mount_points);
 
+Status<void> InitMyFs();
+
 // Allocate a unique inode number.
 ino_t AllocateInodeNumber();
 

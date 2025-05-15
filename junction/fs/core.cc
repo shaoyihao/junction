@@ -12,6 +12,17 @@
 #include "junction/kernel/proc.h"
 #include "junction/kernel/usys.h"
 
+extern "C" {
+  #include "junction/fs/fshao.h"
+}
+
+void read_superblock(SuperBlock *sb)   // 将 superblock 数据存储到 sb 中（空间需提前申请）
+{
+	log_info("Reading SuperBlock ...\n");
+	readObj(sb, sizeof(SuperBlock), 0, 1);
+	log_info("END.\n");
+}
+
 namespace junction {
 
 FSRoot *FSRoot::global_root_ = nullptr;
@@ -413,9 +424,26 @@ long usys_renameat2(int olddirfd, const char *oldpath, int newdirfd,
 }
 
 long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
-  if (strcmp(pathname, "GORUNTIME") == 0)
+  // if (strcmp(pathname, "GORUNTIME") == 0)
+  if (strncmp(pathname, MYPREFIX, MYPREFIX_LEN) == 0)
   {
-    return thread_yield_waitIO();
+    char realpath[MAX_PATH_LEN];
+    strncpy(realpath, pathname + MYPREFIX_LEN, MAX_PATH_LEN - 1);
+    realpath[MAX_PATH_LEN - 1] = '\0';  // 以防万一
+    // log_info("realpath: %s\n", realpath);
+
+    if (realpath[0] == '/')   // absolute path
+    {
+      // demo: 读取 superblock 信息
+      SuperBlock sb;
+	    read_superblock(&sb);
+      log_info("magic_number: 0x%x\n", sb.magic_number);
+      return 666;
+    }
+
+
+    // return thread_yield_waitIO();
+    return 555;
   }
   else
   {
@@ -755,6 +783,14 @@ Status<void> InitFs(
 ino_t AllocateInodeNumber() {
   static std::atomic_size_t inos;
   return inos.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+Status<void> InitMyFs()
+{
+  // TODO: 
+  // set rootdir 
+  // set CWD 
+  return {};
 }
 
 }  // namespace junction

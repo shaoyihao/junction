@@ -192,6 +192,9 @@ Status<void> init() {
   ret = InitFs(linux_mount_points, GetFsMounts());
   if (unlikely(!ret)) return ret;
 
+  ret = InitMyFs();
+  if (unlikely(!ret)) return ret;
+
   ret = ShimJmpInit();
   if (unlikely(!ret)) return ret;
 
