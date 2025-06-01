@@ -22,6 +22,8 @@ extern "C" {
 #include "junction/kernel/stdiofile.h"
 #include "junction/kernel/usys.h"
 
+#include "junction/fs/shaofs/fshao.h"
+
 namespace {
 
 constexpr size_t kInitialCap = 64;
@@ -201,6 +203,34 @@ long usys_ftruncate(int fd, off_t length) {
 }
 
 ssize_t usys_read(int fd, char *buf, size_t len) {
+  if (strncmp(buf, "FSHAO2:", 7) == 0)    // TBD
+  {
+    log_info("fd: %d", fd);
+    log_info("buf: %s", buf);
+    log_info("size: %lu", len);
+
+    FileTable &ftbl = myproc().get_file_table();
+    File *f = ftbl.Get(fd);
+    int inum = f->get_inode()->get_inum();
+    log_info("inode num: %d", inum);
+
+    using ::Inode;
+    Inode ino;
+    read_inode(inum, &ino);
+    log_info("inode num: %d", ino.idx);
+    log_info("file size: %lu", ino.file_size);
+
+    char *data = (char*)read_file_content(&ino);    // TBD
+    // for (int i = 0; i < ino.file_size; i++)
+    // {
+    //   if (data[i] == '\0') log_info("\\0");
+    //   else log_info("%c", data[i]);
+    // }
+    
+    memcpy(buf, data, ino.file_size);
+    return ino.file_size;
+  }
+
   FileTable &ftbl = myproc().get_file_table();
   File *f = ftbl.Get(fd);
   if (unlikely(!f || !f->is_readable())) return -EBADF;
@@ -220,6 +250,26 @@ ssize_t usys_readv(int fd, struct iovec *iov, int iovcnt) {
 }
 
 ssize_t usys_write(int fd, const char *buf, size_t len) {
+  if (strncmp(buf, MYPREFIX, MYPREFIX_LEN) == 0)
+  {
+    // log_info("fd: %d", fd);
+    // log_info("buf: %s", buf);
+    // log_info("size: %lu", len);
+
+    FileTable &ftbl = myproc().get_file_table();
+    File *f = ftbl.Get(fd);
+    int inum = f->get_inode()->get_inum();
+    // log_info("inode num: %d", inum);
+
+    using ::Inode;   // 使用我定义的结构体类型
+    Inode ino;
+    read_inode(inum, &ino);
+    // log_info("inode num: %d", ino.idx);
+
+    size_t written = append_content(&ino, buf, len);
+    return written;
+  }
+
   FileTable &ftbl = myproc().get_file_table();
   File *f = ftbl.Get(fd);
   if (unlikely(!f || !f->is_writeable())) return -EBADF;

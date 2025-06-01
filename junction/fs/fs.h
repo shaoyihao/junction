@@ -351,4 +351,12 @@ Status<std::shared_ptr<Inode>> LookupInode(Process &p, int dirfd,
                                            std::string_view path,
                                            bool chase_link = true);
 
+class MyInode : public Inode {
+ public:
+  MyInode(ino_t inum) : Inode(/* mode = */ 0, inum) {}
+
+  Status<std::shared_ptr<File>> Open(uint32_t, FileMode) override { return MakeError(ENOSYS); }
+  Status<void> GetStats(struct stat *buf) const override { return MakeError(ENOSYS); }
+};
+
 }  // namespace junction

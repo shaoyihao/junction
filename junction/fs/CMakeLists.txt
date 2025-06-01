@@ -10,6 +10,9 @@ add_library(fs
   memfs/memfs.cc
   memfs/dir.cc
   procfs/procfs.cc
+
+  shaofs/core.cc
+  shaofs/dentryCache.cc
 )
 
 target_link_libraries(fs

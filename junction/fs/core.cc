@@ -12,16 +12,9 @@
 #include "junction/kernel/proc.h"
 #include "junction/kernel/usys.h"
 
-extern "C" {
-  #include "junction/fs/fshao.h"
-}
+#include "junction/fs/shaofs/fshao.h"
+#include "junction/fs/shaofs/dentryCacheManager.h"
 
-void read_superblock(SuperBlock *sb)   // 将 superblock 数据存储到 sb 中（空间需提前申请）
-{
-	log_info("Reading SuperBlock ...\n");
-	readObj(sb, sizeof(SuperBlock), 0, 1);
-	log_info("END.\n");
-}
 
 namespace junction {
 
@@ -429,16 +422,41 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
   {
     char realpath[MAX_PATH_LEN];
     strncpy(realpath, pathname + MYPREFIX_LEN, MAX_PATH_LEN - 1);
-    realpath[MAX_PATH_LEN - 1] = '\0';  // 以防万一
-    // log_info("realpath: %s\n", realpath);
+    realpath[MAX_PATH_LEN - 1] = '\0';
 
     if (realpath[0] == '/')   // absolute path
     {
-      // demo: 读取 superblock 信息
-      SuperBlock sb;
-	    read_superblock(&sb);
-      log_info("magic_number: 0x%x\n", sb.magic_number);
-      return 666;
+      IEntry ent = lookup(realpath);
+      if (ent.code == 1)  // 部分匹配（可能是新建文件）
+      {
+        if (flags & kFlagCreate)   // 新建文件
+        {
+          log_info("creating new file: %s\n", ent.last_name);
+          // create_file(ent.ino, ent.last_name);
+        }
+        else return -1;
+      }
+      else if (ent.code == 0)    // 返回一个已存在文件的inode
+      {
+        // ent.ino;
+        log_info("this file alreadly exists!");
+        log_info("idx: %d\n", ent.ino->idx);
+      }
+      else return -1;    // 路径错误
+
+      log_info("inode num: %lu", ent.ino->idx);
+      PathCache& cache = PathCacheManager::instance();
+      log_info("cache size: %d", cache.size());
+
+      Process &p = myproc();
+      FileTable &ftbl = p.get_file_table();
+
+      auto [opflag, fmode] = FromFlags(flags);
+      std::shared_ptr<Inode> myinode = std::make_shared<MyInode>(ent.ino->idx); 
+      // log_info("ino_num: %lu", myinode->get_inum());
+
+      Status<std::shared_ptr<File>> f = std::make_shared<File>(FileType::kNormal, opflag, fmode, myinode);
+      return ftbl.Insert(std::move(*f), (flags & kFlagCloseExec) > 0);
     }
 
 
