@@ -14,6 +14,7 @@
 
 #include "junction/fs/shaofs/fshao.h"
 #include "junction/fs/shaofs/dentryCacheManager.h"
+#include "junction/fs/shaofs/blockcache.h"
 
 
 namespace junction {
@@ -418,35 +419,42 @@ long usys_renameat2(int olddirfd, const char *oldpath, int newdirfd,
 
 long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
   // if (strcmp(pathname, "GORUNTIME") == 0)
-  if (strncmp(pathname, MYPREFIX, MYPREFIX_LEN) == 0)
+  if (strncmp(pathname, MYPREFIX, MYPREFIX_LEN) == 0)   // 判断 pathname 是否具有指定前缀
   {
     char realpath[MAX_PATH_LEN];
-    strncpy(realpath, pathname + MYPREFIX_LEN, MAX_PATH_LEN - 1);
+    strncpy(realpath, pathname + MYPREFIX_LEN, MAX_PATH_LEN - 1);  // 取出实际路径
     realpath[MAX_PATH_LEN - 1] = '\0';
 
-    if (realpath[0] == '/')   // absolute path
+    if (realpath[0] == '/')   // 绝对路径
     {
-      IEntry ent = lookup(realpath);
-      if (ent.code == 1)  // 部分匹配（可能是新建文件）
+      IEntry ent = lookup(realpath);  // 解析该路径
+      if (ent.code == 1)           // 部分匹配（可能是新建文件）
       {
         if (flags & kFlagCreate)   // 新建文件
         {
           log_info("creating new file: %s\n", ent.last_name);
-          // create_file(ent.ino, ent.last_name);
+          // ent.ino = create_file(ent.ino, ent.last_name);
+          ent.code = 0;
+
+          PathCache& cache = PathCacheManager::instance();
+          cache.put(realpath, ent.ino);
+          log_info("cache size: %d", cache.size());
         }
-        else return -1;
+        else   // 路径错误 
+            return -1;
       }
-      else if (ent.code == 0)    // 返回一个已存在文件的inode
+      else if (ent.code == 0)    // 完全匹配
       {
-        // ent.ino;
+        // 返回一个已存在文件的inode：ent.ino;
         log_info("this file alreadly exists!");
         log_info("idx: %d\n", ent.ino->idx);
       }
-      else return -1;    // 路径错误
+      else    // 路径错误
+        return -1;    
 
+      // 成功获取到 Inode
       log_info("inode num: %lu", ent.ino->idx);
-      PathCache& cache = PathCacheManager::instance();
-      log_info("cache size: %d", cache.size());
+      
 
       Process &p = myproc();
       FileTable &ftbl = p.get_file_table();
@@ -805,6 +813,16 @@ ino_t AllocateInodeNumber() {
 
 Status<void> InitMyFs()
 {
+  // page_pool_init(1024);  
+  // log_info("init page pool");
+
+  block_cache_init(BLOCK_CACHE_CAPACITY);
+  log_info("init data block cache!");
+
+  // BlockCache::set_default_capacity(4096);
+  // auto& blockcache = BlockCache::instance();
+  // blockcache.set_eviction_callback(nullptr);
+
   // TODO: 
   // set rootdir 
   // set CWD 

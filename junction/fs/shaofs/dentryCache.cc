@@ -1,7 +1,5 @@
 #include "dentryCache.h"
 
-PathCache path_cache(DENTRY_CACHE_NUM);   // 一个全局对象
-
 PathCache::PathCache(size_t capacity) : capacity_(capacity) {}
 
 bool PathCache::get(const std::string& path, Inode*& out_inode)   // 查询缓存

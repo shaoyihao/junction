@@ -16,6 +16,7 @@
 #define INODENUM              1024
 #define EXTENT_BLOCK_MIN_NUM  4
 #define FREE_BLOCKS_PER_GROUP 511
+#define BLOCK_CACHE_CAPACITY  1024
 
 #define DIV_UP(x, b) (((x) + (b) - 1) / (b))
 #define ALIGN(x, k) (((x) + (k) - 1) / (k) * (k))

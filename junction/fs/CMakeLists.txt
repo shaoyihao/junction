@@ -13,6 +13,8 @@ add_library(fs
 
   shaofs/core.cc
   shaofs/dentryCache.cc
+  shaofs/page_allocator.cc
+  shaofs/blockcache.cc
 )
 
 target_link_libraries(fs

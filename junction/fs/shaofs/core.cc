@@ -1,5 +1,6 @@
 #include "fshao.h"
 #include "dentryCacheManager.h"
+#include "blockcache.h"
 #include <string>
 #include <vector>
 
@@ -32,8 +33,17 @@ void* read_extent_content(Extent *ext)    // 读取 ext 对应若干个 LBA 中�
 	if (ext->block_count == 0) return NULL;
 
 	size_t siz = ext->block_count * LBA_SIZE;
-	void* data = malloc(siz);
-	readObj(data, siz, ext->physical_start, ext->block_count);
+	uint8_t* data = (uint8_t*)malloc(siz);
+  // readObj(data, siz, ext->physical_start, ext->block_count);
+
+  for (size_t i = 0; i < ext->block_count; ++i)
+  {
+    uint64_t lba = ext->physical_start + i;
+    uint8_t* dst = data + i * LBA_SIZE;
+
+    block_cache_read(lba, dst);
+  }
+
 	return data;
 }
 inline uint64_t extent_size(Extent *ext)
@@ -98,7 +108,6 @@ std::string join_path(const std::vector<std::string>& parts, int count)
 
 IEntry lookup(const char *pathname)
 {
-  IEntry res;
   PathCache& cache = PathCacheManager::instance();
 
   char path_copy[MAX_PATH_LEN];
@@ -134,14 +143,13 @@ IEntry lookup(const char *pathname)
   }
 
   // 基于 base_inode 搜索完整路径对应的 Inode
+  IEntry res;
   Inode* current_inode = base_inode;
   for (int i = prefix_hit_index; i < parts.size(); ++i)    // 在 dentries 中搜索 parts[i]
   {
       if (current_inode->type != DIRECTORY) 
       {
           res.code = -1;
-          res.ino = current_inode;
-          strncpy(res.last_name, parts[i].c_str(), MAX_PATH_LEN);
           return res;
       }
 
@@ -243,9 +251,9 @@ void write_inode(int idx, Inode *ino)    // 将 ino 的数据写到盘上第 idx
 	log_info("END.");
 }
 
-void write_to_extent(const Extent *ext, uint64_t offset, const void *data, size_t size)
+void write_to_extent(const Extent *ext, uint64_t offset, const void *data, size_t size)   // 从该 extent 的 offset 处起，写入 size 长度数据
 {
-	size_t total_capacity = ext->block_count * LBA_SIZE;
+	size_t total_capacity = ext->block_count * LBA_SIZE;    // 该 extent 的总容量
 
 	if (total_capacity - offset < size) 
 	{
@@ -253,9 +261,38 @@ void write_to_extent(const Extent *ext, uint64_t offset, const void *data, size_
 		return;
 	}
 
-	char *buf = (char*)malloc(total_capacity);
-	readObj(buf, total_capacity, ext->physical_start, ext->block_count);
-	memcpy(buf + offset, data, size);
+	// char *buf = (char*)malloc(total_capacity);
+	// readObj(buf, total_capacity, ext->physical_start, ext->block_count);
+	// memcpy(buf + offset, data, size);
+
+  uint8_t* src = (uint8_t*)data;
+  while (size > 0)
+  {
+    uint64_t blk = offset / LBA_SIZE;                        // 本次落到第几个块
+    size_t   oft = offset % LBA_SIZE;                        // 块内偏移
+    uint64_t lba = ext->physical_start + blk;                // 本次要往哪个块中写
+    size_t chunk = std::min<size_t>(size, LBA_SIZE - oft);   // 本次写入的数据大小
+
+    if (oft == 0 && chunk == LBA_SIZE)   // 直接写入整块（无需先读出旧数据）
+    {
+      block_cache_write(lba, src);
+    }
+    else
+    {
+      uint8_t tmp[LBA_SIZE];
+      if (block_cache_read(lba, tmp))   // 将该 lba 中的数据读到 tmp 中
+      {
+        log_info("[page pool out of memory] read cache failed\n");
+        return;
+      }
+      std::memcpy(tmp + oft, src, chunk);
+      block_cache_write(lba, tmp);      // 写回 cache 中
+    }
+
+    offset += chunk;
+    src    += chunk;
+    size   -= chunk;
+  }
 
   // Dirent *d = (Dirent *)buf;
   // for (int i = 0; i < 3; i++)
@@ -264,8 +301,8 @@ void write_to_extent(const Extent *ext, uint64_t offset, const void *data, size_
   //   log_info("%-15d %-20s %-10lu\n", ent.filetype, ent.name, ent.inum);
   // }
 
-	writeObj(buf, total_capacity, ext->physical_start, ext->block_count, 1);
-	free(buf);
+	// writeObj(buf, total_capacity, ext->physical_start, ext->block_count, 1);
+	// free(buf);
 }
 // void append_content(Inode *inode, void *data, size_t siz)
 // {
@@ -416,22 +453,27 @@ size_t append_content(Inode *inode, const void *data, size_t siz)
     return siz;
 }
 
-void create_file(Inode *ino, const char *filename)   // 在目录 ino 下创建一个新文件
+Inode* create_file(Inode *ino, const char *filename)   // 在目录 ino 下创建一个新文件，返回新创建的 inode
 {
-  if (ino->type != DIRECTORY) return;
+  if (ino->type != DIRECTORY) 
+  {
+    log_info("Error: inode is not a directory.");
+    return NULL;
+  }
 
   // 分配 inode
-  int inum = alloc_inode();    
+  unsigned long inum = alloc_inode();    
   log_info("new ino num: %d", inum);
-  Inode inode = {.idx=inum, .used=1, .type=REGULAR, .file_size=0, .indirect_extent_block=0};
-  write_inode(inum, &inode);
+  Inode *inode = new Inode {.idx=inum, .used=1, .type=REGULAR, .file_size=0, .indirect_extent_block=0};   // 初始化这个新的 inode
+  write_inode(inum, inode);
 
   // 添加目录项
-  Dirent new_ent = {.inum=inum, .filetype=inode.type};
+  Dirent new_ent = {.inum=inum, .filetype=inode->type};
   strncpy(new_ent.name, filename, DIRSIZ);
   append_content(ino, &new_ent, sizeof(Dirent));
 
   log_info("successfully created a file!");
+  return inode;
 }
 
 void print_file_content(Inode *ino)
