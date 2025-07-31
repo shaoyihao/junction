@@ -12,10 +12,12 @@
 #include "junction/kernel/proc.h"
 #include "junction/kernel/usys.h"
 
-#include "junction/fs/shaofs/fshao.h"
-#include "junction/fs/shaofs/dentryCacheManager.h"
-#include "junction/fs/shaofs/blockcache.h"
-
+#include "junction/fs/shaofs/base.h"
+#include "junction/fs/shaofs/disk.h"
+#include "junction/fs/shaofs/dentry.h"
+#include "junction/fs/shaofs/file.h"
+#include "junction/fs/shaofs/blockCache.h"
+#include "junction/fs/shaofs/dentryCache.h"
 
 namespace junction {
 
@@ -418,12 +420,17 @@ long usys_renameat2(int olddirfd, const char *oldpath, int newdirfd,
 }
 
 long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
-  // if (strcmp(pathname, "GORUNTIME") == 0)
   if (strncmp(pathname, MYPREFIX, MYPREFIX_LEN) == 0)   // 判断 pathname 是否具有指定前缀
   {
     char realpath[MAX_PATH_LEN];
     strncpy(realpath, pathname + MYPREFIX_LEN, MAX_PATH_LEN - 1);  // 取出实际路径
     realpath[MAX_PATH_LEN - 1] = '\0';
+
+    // struct kthread *k = myk();
+    // if (k->blocks.top == 0)    // 还没有分配LBA，先分配一些
+    // {
+    //   block_pool_create(&k->blocks);
+    // }     
 
     if (realpath[0] == '/')   // 绝对路径
     {
@@ -432,13 +439,18 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
       {
         if (flags & kFlagCreate)   // 新建文件
         {
-          log_info("creating new file: %s\n", ent.last_name);
-          // ent.ino = create_file(ent.ino, ent.last_name);
+    //       struct kthread *k = myk();
+    //       if (k->blocks.top == 0)    // 还没有分配LBA，先分配一些
+    //       {
+    //         block_pool_create(&k->blocks);
+    //       }      
+
+          log_info("creating new file: %s", ent.last_name);
+          ent.ino = create_file(ent.ino, ent.last_name);
           ent.code = 0;
 
-          PathCache& cache = PathCacheManager::instance();
-          cache.put(realpath, ent.ino);
-          log_info("cache size: %d", cache.size());
+          auto& dentrycache = DentryCacheManager::instance();
+          dentrycache.put(realpath, ent.ino->inum);
         }
         else   // 路径错误 
             return -1;
@@ -447,20 +459,19 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
       {
         // 返回一个已存在文件的inode：ent.ino;
         log_info("this file alreadly exists!");
-        log_info("idx: %d\n", ent.ino->idx);
       }
       else    // 路径错误
         return -1;    
 
       // 成功获取到 Inode
-      log_info("inode num: %lu", ent.ino->idx);
+      log_info("inode num: %d", ent.ino->inum);
       
 
       Process &p = myproc();
       FileTable &ftbl = p.get_file_table();
 
       auto [opflag, fmode] = FromFlags(flags);
-      std::shared_ptr<Inode> myinode = std::make_shared<MyInode>(ent.ino->idx); 
+      std::shared_ptr<Inode> myinode = std::make_shared<MyInode>(ent.ino->inum); 
       // log_info("ino_num: %lu", myinode->get_inum());
 
       Status<std::shared_ptr<File>> f = std::make_shared<File>(FileType::kNormal, opflag, fmode, myinode);
@@ -813,11 +824,17 @@ ino_t AllocateInodeNumber() {
 
 Status<void> InitMyFs()
 {
+  read_sb();
+  read_imap(imap);
+  block_cache_init();
+  init_inode_cache();
+  init_dentryCache();
+
   // page_pool_init(1024);  
   // log_info("init page pool");
 
-  block_cache_init(BLOCK_CACHE_CAPACITY);
-  log_info("init data block cache!");
+  // block_cache_init(BLOCK_CACHE_CAPACITY);
+  // log_info("init data block cache!");
 
   // BlockCache::set_default_capacity(4096);
   // auto& blockcache = BlockCache::instance();
@@ -825,7 +842,8 @@ Status<void> InitMyFs()
 
   // TODO: 
   // set rootdir 
-  // set CWD 
+  // set CWD
+  log_info("My FS init over");
   return {};
 }
 

@@ -1,15 +1,12 @@
-#include "dentryCache.h"
-#include "inodeCache.h"
 #include "dentry.h"
+#include "inode.h"
+#include "inodeCache.h"
 #include "file.h"
-#include <string.h>
+#include "dentryCache.h"
 #include <vector>
+#include <cstring>
+#include <string>
 
-void init_dentryCache(size_t capacity)
-{
-    log_info("init dir entry cache ...");
-    InodeCacheManager::instance(capacity);     // 好像没有必要设置 evict 函数
-}
 
 static std::string join_path(const std::vector<std::string>& parts, int count) 
 {
@@ -19,8 +16,11 @@ static std::string join_path(const std::vector<std::string>& parts, int count)
     for (int i = 0; i < count; ++i) path = path + "/" + parts[i];
     return path;
 }
-std::shared_ptr<MInode> get_inode(const char *pathname)
+
+IEntry lookup(const char *pathname)
 {
+    log_info("try to lookup path: %s", pathname);
+    
     auto& dentrycache = DentryCacheManager::instance();
 
     char path_copy[MAX_PATH_LEN];
@@ -46,17 +46,23 @@ std::shared_ptr<MInode> get_inode(const char *pathname)
         }
     }
 
-    if (prefix_hit_index == -1)   // 根目录都没命中，手动设置一下
+    if (prefix_hit_index == -1)   // 根目录都没命中，手动读出来
     {   
         base_inode = ROOT_INO;
         dentrycache.put("/", base_inode);  // 存入 cache 中
         prefix_hit_index = 0;
     }
 
+    // 基于 base_inode 搜索完整路径对应的 Inode
+    IEntry res;
     std::shared_ptr<MInode> current_inode = get_inode(base_inode);
     for (int i = prefix_hit_index; i < parts.size(); ++i)    // 在 dentries 中搜索 parts[i]
     {
-        if (current_inode->disk_inode.type != DIRECTORY) return nullptr;   // 查找失败
+        if (current_inode->disk_inode.type != DIRECTORY) 
+        {
+            res.code = -1;
+            return res;
+        }
 
         Dirent* entries = (Dirent*)read_file_content(current_inode);
         int entry_count = current_inode->disk_inode.file_size / sizeof(Dirent);
@@ -69,13 +75,24 @@ std::shared_ptr<MInode> get_inode(const char *pathname)
                 found = true;
                 break;
             }
-        
-        if (found == false) return nullptr;
-        
+
+        if (found == false)   // 该目录下不存在 parts[i]
+        {
+            if (i == parts.size() - 1) res.code = 1;   // 仅是最后一个token不匹配（可能是新建文件）
+            else                       res.code = -1;  // 不合法路径
+            res.ino = current_inode;
+            strncpy(res.last_name, parts[i].c_str(), MAX_PATH_LEN);
+            return res;
+        }
+
+        // 该目录下存在 parts[i]，向下一级
         current_inode = get_inode(target_inum);
-        std::string full_path = join_path(parts, i + 1);
-        dentrycache.put(full_path.c_str(), target_inum);
+        std::string full_path = join_path(parts, i + 1);  // 构造完整路径
+        dentrycache.put(full_path.c_str(), target_inum);      // 存入 cache 中
     }
 
-    return current_inode;
+    // 完全匹配
+    res.code = 0;
+    res.ino = current_inode;
+    return res;
 }

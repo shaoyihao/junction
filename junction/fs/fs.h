@@ -15,6 +15,7 @@ extern "C" {
 
 #include "junction/bindings/rcu.h"
 #include "junction/fs/file.h"
+#include "junction/fs/shaofs/base.h"
 
 namespace junction {
 
@@ -353,7 +354,7 @@ Status<std::shared_ptr<Inode>> LookupInode(Process &p, int dirfd,
 
 class MyInode : public Inode {
  public:
-  MyInode(ino_t inum) : Inode(/* mode = */ 0, inum) {}
+  MyInode(ino_t inum) : Inode(/* mode = */ SHAOFS, inum) {}
 
   Status<std::shared_ptr<File>> Open(uint32_t, FileMode) override { return MakeError(ENOSYS); }
   Status<void> GetStats(struct stat *buf) const override { return MakeError(ENOSYS); }

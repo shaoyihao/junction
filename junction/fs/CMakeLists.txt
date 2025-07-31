@@ -11,10 +11,14 @@ add_library(fs
   memfs/dir.cc
   procfs/procfs.cc
 
-  shaofs/core.cc
+  shaofs/disk.cc
+  shaofs/blockCache.cc
+  shaofs/file.cc
+  shaofs/dentry.cc
+  shaofs/inode.cc
+  shaofs/inodeCache.cc
   shaofs/dentryCache.cc
-  shaofs/page_allocator.cc
-  shaofs/blockcache.cc
+  shaofs/extent.cc
 )
 
 target_link_libraries(fs
