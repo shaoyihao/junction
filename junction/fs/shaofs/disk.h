@@ -79,5 +79,5 @@ void write_imap(u_int64_t *bm);
 
 
 uint64_t extent_size(const iExtent* ext);
-void* read_extent(const iExtent *ext);
+void* read_extent(const iExtent *ext, uint64_t offset, size_t size);
 void write_extent(const iExtent *ext, uint64_t offset, const void *data, size_t size);

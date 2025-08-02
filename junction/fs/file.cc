@@ -267,10 +267,12 @@ ssize_t usys_write(int fd, const char *buf, size_t len) {
     auto& cache = InodeCacheManager::instance();
     std::shared_ptr<MInode> inode_ptr;
     cache.get(inum, inode_ptr);
+    ref_inode(inode_ptr);
 
     log_info("disk inode num: %d", inode_ptr->disk_inode.idx);
 
     size_t written = append_content(inode_ptr, buf, len);
+    release_inode(inode_ptr);
     return written;
   }
 

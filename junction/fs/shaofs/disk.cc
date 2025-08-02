@@ -34,11 +34,10 @@ uint64_t extent_size(const iExtent* ext)
 }
 
 
-void* read_extent(const iExtent *ext)   // 从磁盘上读取一个 extent 的内容
+void* read_extent(const iExtent *ext, uint64_t offset, size_t size)   // 从磁盘上读取某个 extent 中从 offset 处长度为 size 的内容
 {
-    if (ext->block_count == 0) return NULL;
+    if (ext->block_count == 0 || size == 0) return NULL;
 
-    size_t size = extent_size(ext);
     char* buf = (char*)malloc(size);
     if (!buf) 
 	{ 
@@ -46,14 +45,42 @@ void* read_extent(const iExtent *ext)   // 从磁盘上读取一个 extent 的�
 		return NULL; 
 	}
 
-	// size_t total_size = 0;
-    // for (size_t i = 0; i < ext->block_count; i++)        // 逐个读取 block
-	// {
-    //     read_block(ext->physical_start + i, buf + total_size);  // 从 cache 中读取 block
-    //     total_size += BLOCK_SIZE;
-    // }
+	char *tmp = (char*)malloc(BLOCK_SIZE);
+	size_t total_size = 0;
 
-    readObj(buf, size, ext->physical_start, ext->block_count);
+	uint64_t start_block_idx = offset / BLOCK_SIZE;
+	uint64_t end_block_idx = (offset + size - 1) / BLOCK_SIZE;
+    for (uint64_t i = start_block_idx; i <= end_block_idx; i++)        // 逐个读取 block
+	{
+		if (i == start_block_idx)
+		{
+			read_block(ext->physical_start + i, tmp);
+
+			size_t block_offset = offset % BLOCK_SIZE;
+			size_t block_size = MIN(BLOCK_SIZE - block_offset, size);   // 考虑到只涉及 1 块的情况
+			memcpy(buf + total_size, tmp + block_offset, block_size);
+			total_size += block_size;
+		}
+		else if (i == end_block_idx)
+		{
+			read_block(ext->physical_start + i, tmp);
+
+			size_t block_size = BLOCK_SIZE;
+			size_t tail_size = (offset + size) % BLOCK_SIZE;
+			if (tail_size > 0) block_size = tail_size;
+
+			memcpy(buf + total_size, tmp, block_size);
+			total_size += block_size;
+		}
+		else
+		{
+			read_block(ext->physical_start + i, buf + total_size);  // 从 cache 中读取 block
+			total_size += BLOCK_SIZE;
+		}
+    }
+	free(tmp);
+
+    // readObj(buf, size, ext->physical_start, ext->block_count);
 
     return buf; // 记得外部 free()
 }
@@ -69,41 +96,42 @@ void write_extent(const iExtent *ext, uint64_t offset, const void *data, size_t 
 		return;
 	}
 
-	// uint64_t start_block_idx = offset / BLOCK_SIZE;
-	// uint64_t end_block_idx = (offset + size - 1) / BLOCK_SIZE;
-	// for (size_t i = start_block_idx; i <= end_block_idx; i++)
+	char *tmp = (char*)malloc(BLOCK_SIZE);
+
+	uint64_t start_block_idx = offset / BLOCK_SIZE;
+	uint64_t end_block_idx = (offset + size - 1) / BLOCK_SIZE;
+	for (size_t i = start_block_idx; i <= end_block_idx; i++)
+	{
+		size_t block_offset = 0, block_size = BLOCK_SIZE;
+
+		if (i == start_block_idx)
+		{
+			read_block(ext->physical_start + i, tmp);
+			block_offset = offset % BLOCK_SIZE;
+			block_size = MIN(BLOCK_SIZE - block_offset, size);   // 考虑到只涉及 1 块的情况
+		}
+		else if (i == end_block_idx)
+		{
+			read_block(ext->physical_start + i, tmp);
+			size_t tail_size = (offset + size) % BLOCK_SIZE;
+			if (tail_size > 0) block_size = tail_size;
+		}
+
+		memcpy(tmp + block_offset, data, block_size);
+		write_block(ext->physical_start + i, tmp);
+
+		data = (const char*)data + block_size;
+		size -= block_size;
+	}
+
+	// char *buf = (char*)malloc(total_capacity);
+	// if (buf == NULL) 
 	// {
-	// 	std::shared_ptr<BlockEntry> block = std::make_shared<BlockEntry>();
-	// 	block->lba = ext->physical_start + i;
-	// 	block->dirty = true;
-	// 	char* buf = block->data;
-
-	// 	size_t block_offset = 0, block_size = BLOCK_SIZE;
-
-	// 	if (i == start_block_idx)
-	// 	{
-	// 		read_block(ext->physical_start + i, buf);
-	// 		block_offset = offset % BLOCK_SIZE;
-	// 		block_size = MIN(BLOCK_SIZE - block_offset, size);   // 考虑到只涉及 1 块的情况
-	// 	}
-	// 	else if (i == end_block_idx)
-	// 	{
-	// 		read_block(ext->physical_start + i, buf);
-	// 		size_t tail_size = (offset + size) % BLOCK_SIZE;
-	// 		if (tail_size > 0) block_size = tail_size;
-	// 	}
-
-	// 	memcpy(buf + block_offset, data, block_size);
-
-	// 	cache.put(block->lba, block);
-
-	// 	data = (const char*)data + block_size;
-	// 	size -= block_size;
+	// 	log_info("ERROR malloc");
+	// 	return;
 	// }
-
-	char *buf = (char*)malloc(total_capacity);
-	readObj(buf, total_capacity, ext->physical_start, ext->block_count);
-	memcpy(buf + offset, data, size);
-	writeObj(buf, total_capacity, ext->physical_start, ext->block_count);
-	free(buf);
+	// readObj(buf, total_capacity, ext->physical_start, ext->block_count);
+	// memcpy(buf + offset, data, size);
+	// writeObj(buf, total_capacity, ext->physical_start, ext->block_count);
+	// free(buf);
 }

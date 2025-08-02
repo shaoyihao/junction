@@ -7,15 +7,12 @@
 typedef struct BlockEntry
 {
     BlockID lba;
-    char data[BLOCK_SIZE]; 
+    char* data; 
     bool dirty;
-
-    BlockEntry() = default;
-    BlockEntry(BlockID blkid) : lba(blkid), dirty(false) {}
 } BlockEntry;
 
 
-using BlockCacheManager = CacheSingleton<BlockID, std::shared_ptr<BlockEntry>>;
+using BlockCacheManager = CacheSingleton<BlockID, BlockEntry>;
 
 
 void block_cache_init(size_t capacity = DEFAULT_CACHE_SIZE);

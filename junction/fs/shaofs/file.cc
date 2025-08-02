@@ -23,15 +23,17 @@ void* read_file_content(std::shared_ptr<MInode> inode)    // 读取 inode 对应
 	{
 		iExtent* ext = &inode->disk_inode.direct_extents[i];
 		if (ext->block_count == 0) continue;
-		void* data = read_extent(ext);
+
+		uint64_t copy_size = MIN(remaining, extent_size(ext));
+
+		void* data = read_extent(ext, 0, copy_size);
 		if (!data) 
 		{
     		log_info("read_extent failed");
     		free(buffer);
     		return NULL;
 		}
-
-		uint64_t copy_size = MIN(remaining, extent_size(ext));
+		
         memcpy(buffer + offset, data, copy_size);
 		free(data);
 
@@ -51,9 +53,9 @@ void* read_file_content(std::shared_ptr<MInode> inode)    // 读取 inode 对应
 		{
             iExtent* ext = &indirect_extents[i];
 			if (ext->block_count == 0) continue;
-			void* data = read_extent(ext);
 
-            uint64_t copy_size = MIN(remaining, extent_size(ext));
+			uint64_t copy_size = MIN(remaining, extent_size(ext));
+			void* data = read_extent(ext, 0, copy_size);
             memcpy(buffer + offset, data, copy_size);
 			free(data);
 
@@ -69,6 +71,7 @@ size_t append_content(std::shared_ptr<MInode> inode, const void *data, size_t si
 {
     if (siz == 0) return 0;
 
+	spin_lock(&inode->lock);
     uint64_t last_block   = inode->disk_inode.file_size / BLOCK_SIZE;    // 文件最后一块的逻辑号
     uint64_t block_offset = inode->disk_inode.file_size % BLOCK_SIZE;    // 文件内容在最后一块中的偏移
 
@@ -109,6 +112,7 @@ size_t append_content(std::shared_ptr<MInode> inode, const void *data, size_t si
 		if (!ret)
 		{
 			log_info("Error: fail to allocate a new extent");
+			spin_unlock(&inode->lock);
 			return -1;
 		}
 
@@ -129,6 +133,7 @@ size_t append_content(std::shared_ptr<MInode> inode, const void *data, size_t si
 		{
         	// TODO
     		log_warn("No free extent slot in inode!");
+			spin_unlock(&inode->lock);
         	return -1;
     	}
 		log_info("logical start: %lu, physical start: %lu, count: %lu", new_ext->logical_start, new_ext->physical_start, new_ext->block_count);
@@ -140,6 +145,7 @@ size_t append_content(std::shared_ptr<MInode> inode, const void *data, size_t si
 	inode->dirty = true;
 	auto &cache = InodeCacheManager::instance();
     cache.put(inode->inum, inode); 
+	spin_unlock(&inode->lock);
     return siz;
 }
 
