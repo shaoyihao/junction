@@ -1,3 +1,5 @@
+#pragma once
+
 #include "base.h"
 #include <cstdlib>
 #include <vector>
@@ -5,7 +7,7 @@
 
 class BlockPool {
 public:
-    BlockPool(size_t block_size, size_t capacity, void* base_addr = nullptr) : block_size(block_size), capacity(capacity), external_memory(base_addr != nullptr)
+    BlockPool(size_t block_size, size_t capacity, void* base_addr = nullptr) : block_size(block_size), capacity(capacity), external_memory(base_addr != nullptr)  // 仅初始化时执行一次
     {
         if (external_memory) data = (char*)base_addr;  // 使用外部传入的内存地址
         else 
@@ -51,10 +53,10 @@ public:
     }
 
 private:
-    size_t block_size;
-    size_t capacity;
-    char* data;
-    bool external_memory;          // 是否使用外部传入的内存
-    std::vector<char*> free_list;  // 空闲块列表
-    mutable std::mutex mtx;
+    size_t              block_size;
+    size_t              capacity;
+    char*               data;
+    bool                external_memory;   // 是否使用外部传入的内存
+    std::vector<char*>  free_list;         // 空闲块列表
+    mutable std::mutex  mtx;
 };

@@ -8,15 +8,6 @@
 #include <string>
 
 
-static std::string join_path(const std::vector<std::string>& parts, int count) 
-{
-    if (count == 0) return "/";
-
-    std::string path;
-    for (int i = 0; i < count; ++i) path = path + "/" + parts[i];
-    return path;
-}
-
 IEntry lookup(const char *pathname)
 {
     log_info("try to lookup path: %s", pathname);
@@ -34,24 +25,19 @@ IEntry lookup(const char *pathname)
         token = strtok(NULL, "/"); 
     }
 
-    int prefix_hit_index = -1;  // 表示命中到哪一层（parts.size() 表示完整路径，0 表示 "/"）
+    int prefix_hit_index;  // 表示命中到哪一层（parts.size() 表示完整路径，0 表示 "/"）
     int base_inode;
     for (int i = parts.size(); i >= 0; --i)    // 从完整路径开始递减搜索
     {
         std::string probe_path = join_path(parts, i);
         if (dentrycache.get(probe_path.c_str(), base_inode))  // cache hit
         {
+            log_info("dentry cache hits <\"%s\", %d>!", probe_path.c_str(), base_inode);
             prefix_hit_index = i;
             break;
         }
     }
-
-    if (prefix_hit_index == -1)   // 根目录都没命中，手动读出来
-    {   
-        base_inode = ROOT_INO;
-        dentrycache.put("/", base_inode);  // 存入 cache 中
-        prefix_hit_index = 0;
-    }
+    // 至少会命中到 “/”，此时 base_inode=0，prefix_hit_index=0
 
     // 基于 base_inode 搜索完整路径对应的 Inode
     IEntry res;
@@ -60,7 +46,9 @@ IEntry lookup(const char *pathname)
     {
         if (current_inode->disk_inode.type != DIRECTORY) 
         {
+            release_inode(current_inode);
             res.code = -1;
+            res.ino = nullptr;
             return res;
         }
 
@@ -75,20 +63,31 @@ IEntry lookup(const char *pathname)
                 found = true;
                 break;
             }
+        free(entries);
 
         if (found == false)   // 该目录下不存在 parts[i]
         {
-            if (i == parts.size() - 1) res.code = 1;   // 仅是最后一个token不匹配（可能是新建文件）
-            else                       res.code = -1;  // 不合法路径
-            res.ino = current_inode;
-            strncpy(res.last_name, parts[i].c_str(), MAX_PATH_LEN);
+            if (i == parts.size() - 1)  // 仅是最后一个token不匹配（可能是新建文件）
+            {
+                res.code = 1;
+                res.ino = current_inode;
+                strncpy(res.last_name, parts[i].c_str(), MAX_PATH_LEN);
+            }
+            else                        // 不合法路径
+            {
+                release_inode(current_inode);
+                res.code = -1;
+                res.ino = nullptr;
+            }
+
             return res;
         }
 
         // 该目录下存在 parts[i]，向下一级
+        release_inode(current_inode);
         current_inode = get_inode(target_inum);
         std::string full_path = join_path(parts, i + 1);  // 构造完整路径
-        dentrycache.put(full_path.c_str(), target_inum);      // 存入 cache 中
+        dentrycache.put(full_path.c_str(), target_inum);  // 存入 cache 中
     }
 
     // 完全匹配
@@ -96,3 +95,4 @@ IEntry lookup(const char *pathname)
     res.ino = current_inode;
     return res;
 }
+// 只要 code 不是 -1，该函数都会返回一个 inode shared_pointer

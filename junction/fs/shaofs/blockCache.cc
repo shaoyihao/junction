@@ -17,7 +17,7 @@ void block_cache_init(size_t capacity)
     BlockCacheManager::instance(capacity).set_eviction_callback(on_block_evict);
 }
 
-void read_block(BlockID lba, char* out_buf)  // 读取 cache 中的某一块
+void read_block(BlockID lba, void* out_buf)  // 读取某个 lba 中的数据（可能是 cache 命中，也可能需要从盘读取）
 {
     auto& cache = BlockCacheManager::instance();
 
@@ -25,7 +25,7 @@ void read_block(BlockID lba, char* out_buf)  // 读取 cache 中的某一块
 
     if (cache.get(lba, block))   // cache hit
     {
-        log_info("block cache hit");
+        log_info("block cache hit!");
         memcpy(out_buf, block.data, BLOCK_SIZE);     // 复制
         return;
     }
@@ -43,7 +43,7 @@ void read_block(BlockID lba, char* out_buf)  // 读取 cache 中的某一块
     memcpy(out_buf, block.data, BLOCK_SIZE);
 }
 
-void write_block(BlockID lba, const char* in_buf)
+void write_block(BlockID lba, const void* in_buf)   // 将一块数据写到某个 lba 中（先存于 cache 中）
 {
     auto& cache = BlockCacheManager::instance();
 
@@ -60,6 +60,7 @@ void write_block(BlockID lba, const char* in_buf)
 void flush_dirty_blocks() 
 {
     auto& cache = BlockCacheManager::instance();
+    
     cache.for_each_entry([](BlockEntry& entry) {
         if (entry.dirty) 
         {

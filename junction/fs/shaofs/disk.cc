@@ -86,8 +86,6 @@ void* read_extent(const iExtent *ext, uint64_t offset, size_t size)   // 从磁�
 }
 void write_extent(const iExtent *ext, uint64_t offset, const void *data, size_t size)   // 从该 extent 的 offset（B）处起，写入 size 长度数据
 {
-	auto& cache = BlockCacheManager::instance();
-
 	size_t total_capacity = ext->block_count * BLOCK_SIZE;    // 该 extent 的总容量
 
 	if (total_capacity - offset < size) 

@@ -420,10 +420,10 @@ long usys_renameat2(int olddirfd, const char *oldpath, int newdirfd,
 }
 
 long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
-  if (strncmp(pathname, MYPREFIX, MYPREFIX_LEN) == 0)   // 判断 pathname 是否具有指定前缀
+  if (strncmp(pathname, MYPREFIX, MYPREFIX_LEN) == 0)   // 判断 pathname 是否具有指定前缀（从而识别用的是 shaofs）
   {
     char realpath[MAX_PATH_LEN];
-    strncpy(realpath, pathname + MYPREFIX_LEN, MAX_PATH_LEN - 1);  // 取出实际路径
+    strncpy(realpath, pathname + MYPREFIX_LEN, MAX_PATH_LEN - 1);  // 去除前缀，取出实际路径
     realpath[MAX_PATH_LEN - 1] = '\0';
 
     // struct kthread *k = myk();
@@ -432,9 +432,11 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
     //   block_pool_create(&k->blocks);
     // }     
 
+    IEntry ent;
     if (realpath[0] == '/')   // 绝对路径
     {
-      IEntry ent = lookup(realpath);  // 解析该路径
+      ent = lookup(realpath);  // 解析该路径
+      int inum;
       if (ent.code == 1)           // 部分匹配（可能是新建文件）
       {
         if (flags & kFlagCreate)   // 新建文件
@@ -446,41 +448,47 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
     //       }      
 
           log_info("creating new file: %s", ent.last_name);
-          ent.ino = create_file(ent.ino, ent.last_name);
-          ent.code = 0;
+          std::shared_ptr<MInode> newinode = create_file(ent.ino, ent.last_name);
+          inum = newinode->inum;
+          release_inode(ent.ino);
+          release_inode(newinode);
 
           auto& dentrycache = DentryCacheManager::instance();
-          dentrycache.put(realpath, ent.ino->inum);
+          dentrycache.put(realpath, inum);
         }
         else   // 路径错误 
-            return -1;
+        {
+          log_info("ERROR: illegal pathname");
+          release_inode(ent.ino);
+          return -1;
+        }
       }
       else if (ent.code == 0)    // 完全匹配
       {
-        // 返回一个已存在文件的inode：ent.ino;
         log_info("this file alreadly exists!");
+        inum = ent.ino->inum;
+        release_inode(ent.ino);
       }
       else    // 路径错误
-        return -1;    
+      {
+        log_info("ERROR: illegal pathname");
+        return -1;
+      }
 
       // 成功获取到 Inode
-      log_info("inode num: %d", ent.ino->inum);
-      
-
       Process &p = myproc();
       FileTable &ftbl = p.get_file_table();
 
       auto [opflag, fmode] = FromFlags(flags);
-      std::shared_ptr<Inode> myinode = std::make_shared<MyInode>(ent.ino->inum); 
+      std::shared_ptr<Inode> myinode = std::make_shared<MyInode>(inum); 
       // log_info("ino_num: %lu", myinode->get_inum());
 
       Status<std::shared_ptr<File>> f = std::make_shared<File>(FileType::kNormal, opflag, fmode, myinode);
       return ftbl.Insert(std::move(*f), (flags & kFlagCloseExec) > 0);
     }
 
-
     // return thread_yield_waitIO();
-    return 555;
+    // return 555;
   }
   else
   {

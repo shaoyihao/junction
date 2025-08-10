@@ -5,9 +5,9 @@
 #include "utili.h"
 
 #define SHAOFS                  517
-#define DIRECT_EXTENT_NUM       6
 #define MYPREFIX                "FSHAO:"
 #define MYPREFIX_LEN            (sizeof(MYPREFIX) - 1)
+#define DIRECT_EXTENT_NUM       6
 #define MAX_PATH_LEN            4096
 #define ROOT_INO                0
 #define INODENUM                1024

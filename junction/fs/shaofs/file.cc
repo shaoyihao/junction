@@ -1,4 +1,5 @@
 #include "inodeCache.h"
+#include "blockCache.h"
 #include "disk.h"
 #include "base.h"
 #include "file.h"
@@ -46,7 +47,8 @@ void* read_file_content(std::shared_ptr<MInode> inode)    // 读取 inode 对应
 		log_info("reading indirect extent ...");
 
         iExtent* indirect_extents = (iExtent*)malloc(BLOCK_SIZE);
-		readObj(indirect_extents, BLOCK_SIZE, inode->disk_inode.indirect_extent_block, 1);
+		read_block(inode->disk_inode.indirect_extent_block, indirect_extents);
+		// readObj(indirect_extents, BLOCK_SIZE, inode->disk_inode.indirect_extent_block, 1);
 		
         int indirect_num = BLOCK_SIZE / sizeof(iExtent);
         for (int i = 0; i < indirect_num && remaining > 0; i++) 
@@ -67,11 +69,11 @@ void* read_file_content(std::shared_ptr<MInode> inode)    // 读取 inode 对应
 	return buffer;
 }
 
-size_t append_content(std::shared_ptr<MInode> inode, const void *data, size_t siz)    // 将数据尾加到某个 inode 对应的文件中
+size_t append_content(std::shared_ptr<MInode> inode, const void *data, size_t siz)    // 将数据尾加到某个 inode 对应的文件中（inode 的锁应当在 caller 持有）
 {
     if (siz == 0) return 0;
 
-	spin_lock(&inode->lock);
+	// spin_lock(&inode->lock);
     uint64_t last_block   = inode->disk_inode.file_size / BLOCK_SIZE;    // 文件最后一块的逻辑号
     uint64_t block_offset = inode->disk_inode.file_size % BLOCK_SIZE;    // 文件内容在最后一块中的偏移
 
@@ -133,7 +135,7 @@ size_t append_content(std::shared_ptr<MInode> inode, const void *data, size_t si
 		{
         	// TODO
     		log_warn("No free extent slot in inode!");
-			spin_unlock(&inode->lock);
+			// spin_unlock(&inode->lock);
         	return -1;
     	}
 		log_info("logical start: %lu, physical start: %lu, count: %lu", new_ext->logical_start, new_ext->physical_start, new_ext->block_count);
@@ -145,7 +147,7 @@ size_t append_content(std::shared_ptr<MInode> inode, const void *data, size_t si
 	inode->dirty = true;
 	auto &cache = InodeCacheManager::instance();
     cache.put(inode->inum, inode); 
-	spin_unlock(&inode->lock);
+	// spin_unlock(&inode->lock);
     return siz;
 }
 
@@ -160,9 +162,10 @@ std::shared_ptr<MInode> create_file(std::shared_ptr<MInode> ino, const char* fil
 	spin_lock(&ino->lock);    // 锁住目录 inode，因为当前线程需要修改该 inode 的内容
 
 	Dirent* entries = (Dirent*)read_file_content(ino);
-	
-	if (entries == NULL) log_info("fail to read file[%d] content", ino->inum);
-	else log_info("read file[%d] content OVER", ino->inum);
+	if (entries == NULL) 
+		log_info("fail to read file[%d] content", ino->inum);
+	else 
+		log_info("read file[%d] content OVER",    ino->inum);
 
 	int entry_count = ino->disk_inode.file_size / sizeof(Dirent);
 	for (int i = 0; i < entry_count; i++)

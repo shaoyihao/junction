@@ -166,7 +166,7 @@ void ref_inode(std::shared_ptr<MInode>& inode)
     spin_unlock(&inode->lock);
 }
 
-void release_inode(std::shared_ptr<MInode>& inode) 
+void release_inode(std::shared_ptr<MInode>& inode)     // 不使用的时候要及时release
 {
     spin_lock(&inode->lock);
     inode->refcnt--;
@@ -176,6 +176,8 @@ void release_inode(std::shared_ptr<MInode>& inode)
         cache.move_to_end(inode->inum);
     }
     spin_unlock(&inode->lock);
+
+    inode = nullptr;    // 将这个 inode pointer 置为 nullptr
 }
 
 void flush_dirty_inodes()
