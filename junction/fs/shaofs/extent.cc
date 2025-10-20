@@ -1,381 +1,379 @@
-#include "base.h"
+#include "disk.h"
 #include "extent.h"
 #include "blockCache.h"
+#include "group.h"
+#include <vector>
+#include <algorithm>
 
-// void print_extent_node(BlockID block_id)
-// {
-//     printf("\n--- Inspecting Extent Tree Node at block %lu ---\n", block_id);
-
-//     ExtentTreeNode node;
-//     readObj(&node, sizeof(node), block_id, 1);
-
-//     uint16_t magic = *(uint16_t*)(&node); 
-//     uint16_t type  = *((uint16_t*)(&node) + 1);
-
-//     if (magic == EXTENT_LEAF_MAGIC && type == LEAF) 
-// 	{
-//         ExtentLeafNode* leaf = &node.leaf;
-//         printf("[LEAF NODE]\n");
-//         printf("Valid count : %u\n", leaf->valid_count);
-//         printf("Prev leaf   : %lu\n", leaf->prev_leaf);
-//         printf("Next leaf   : %lu\n", leaf->next_leaf);
-//         for (uint32_t i = 0; i < leaf->valid_count; i++) 
-//             printf("  Extent[%2u] = [start = %lu, count = %lu]\n", i, leaf->entries[i].physical_start, leaf->entries[i].block_count);
-//     } 
-// 	else if (magic == EXTENT_INDEX_MAGIC && type == INDEX) 
-// 	{
-//         ExtentIndexNode *index = &node.index;
-//         printf("[INDEX NODE]\n");
-//         printf("Valid count : %u\n", index->valid_count);
-//         for (uint32_t i = 0; i < index->valid_count; i++) 
-//             printf("  Entry[%2u] = { key = %lu, child = %lu }\n", i, index->entries[i].key, index->entries[i].child_block);
-//     } 
-// 	else 
-// 	{
-//         printf("Unknown node type! magic = 0x%X, type = %u\n", magic, type);
-//     }
-
-//     printf("--- END ---\n");
-// }
-// void print_extent_tree(BlockID block_id, int level)
-// {
-//     ExtentTreeNode node;
-//     readObj(&node, sizeof(node), block_id, 1);
-
-//     uint16_t magic = *(uint16_t*)(&node);
-//     uint16_t type  = *((uint16_t*)(&node) + 1);
-
-//     // 缩进输出
-//     for (int i = 0; i < level; i++) printf("  ");
-
-//     if (magic == EXTENT_LEAF_MAGIC && type == LEAF) 
-// 	{
-//         ExtentLeafNode *leaf = &node.leaf;
-//         printf("Leaf Node @ block %lu | valid_count: %u\n", block_id, leaf->valid_count);
-//         for (uint32_t i = 0; i < leaf->valid_count; i++) 
-// 		{
-//             for (int j = 0; j < level; j++) printf("  ");
-//             printf("  - Extent[%u]: [start = %lu, count = %lu]\n", i, leaf->entries[i].physical_start, leaf->entries[i].block_count);
-//         }
-//     } 
-// 	else if (magic == EXTENT_INDEX_MAGIC && type == INDEX) 
-// 	{
-//         ExtentIndexNode *index = &node.index;
-//         printf("Index Node @ block %lu | valid_count: %u\n", block_id, index->valid_count);
-//         for (uint32_t i = 0; i < index->valid_count; i++) 
-// 		{
-//             for (int j = 0; j < level; j++) printf("  ");
-//             printf("  ↳ Entry[%u]: key = %lu, child = %lu\n", i, index->entries[i].key, index->entries[i].child_block);
-//             print_extent_tree(index->entries[i].child_block, level + 1); // 递归打印 child
-//         }
-//     } 
-// 	else 
-// 	{
-//         for (int i = 0; i < level; i++) printf("  ");
-//         printf("Unknown node at block %lu (magic=0x%x, type=%u)\n", block_id, magic, type);
-//     }
-// }
-// int check_tree_consistency(BlockID block_id, int level)
-// {
-//     ExtentTreeNode node;
-//     readObj(&node, sizeof(node), block_id, 1);
-
-//     uint16_t magic = *(uint16_t*)(&node);
-//     uint16_t type  = *((uint16_t*)(&node) + 1);
-
-//     char indent[64] = {0};
-//     memset(indent, ' ', level * 2);
-//     indent[level * 2] = '\0';
-
-//     if (magic == EXTENT_LEAF_MAGIC && type == LEAF) 
-// 	{
-//         ExtentLeafNode *leaf = &node.leaf;
-
-//         if (leaf->valid_count > MAX_EXTENTS_PER_LEAF) 
-// 		{
-//             printf("%s Leaf node at block %lu has too many entries: %u\n", indent, block_id, leaf->valid_count);
-//             return 0;
-//         }
-
-//         // 检查 extent 是否升序 & 不重叠
-//         for (uint32_t i = 1; i < leaf->valid_count; i++) 
-// 		{
-//             uint64_t prev_end = leaf->entries[i-1].physical_start + leaf->entries[i-1].block_count;
-//             uint64_t curr_start = leaf->entries[i].physical_start;
-//             if (curr_start < prev_end) 
-// 			{
-//                 printf("%s Leaf node extent overlap or out-of-order at block %lu (entry %u)\n", indent, block_id, i);
-//                 return 0;
-//             }
-//         }
-
-//         printf("%s Leaf @ block %lu passed.\n", indent, block_id);
-//         return 1;
-
-//     } 
-// 	else if (magic == EXTENT_INDEX_MAGIC && type == INDEX) 
-// 	{
-//         ExtentIndexNode *index = &node.index;
-
-//         if (index->valid_count > MAX_ENTRIES_PER_NODE) 
-// 		{
-//             printf("%s Index node at block %lu has too many entries: %u\n", indent, block_id, index->valid_count);
-//             return 0;
-//         }
-
-//         // key 是否升序
-//         for (uint32_t i = 1; i < index->valid_count; i++) 
-//             if (index->entries[i].key < index->entries[i-1].key) 
-// 			{
-//                 printf("%s Index keys not in order at block %lu (entry %u)\n", indent, block_id, i);
-//                 return 0;
-//             }
-
-//         printf("%s Index @ block %lu passed.\n", indent, block_id);
-
-//         // 递归检查每个 child
-//         for (uint32_t i = 0; i < index->valid_count; i++) 
-//             if (!check_tree_consistency(index->entries[i].child_block, level + 1)) return 0;
-
-//         return 1;
-
-//     } 
-// 	else 
-// 	{
-//         printf("%s Unknown node at block %lu: magic=0x%x, type=%u\n", indent, block_id, magic, type);
-//         return 0;
-//     }
-// }
-
-// static inline bool extent_is_adjacent(const Extent *a, const Extent *b)
-// {
-//     return (a->physical_start + a->block_count) == b->physical_start || (b->physical_start + b->block_count) == a->physical_start;
-// }
-static inline bool extent_overlaps_or_adjacent(const Extent *a, const Extent *b)
-{
-    BlockID a_start = a->physical_start, a_end = a->physical_start + a->block_count;
-    BlockID b_start = b->physical_start, b_end = b->physical_start + b->block_count;
-    return !(a_end < b_start || b_end < a_start);   // overlap or touch
-}
-static inline void extent_merge_into(Extent *a, const Extent *b)   // 将 a、b 合并至 a 中（无需考虑 a、b 顺序）
-{
-    BlockID start = MIN(a->physical_start, b->physical_start);
-    BlockID end   = MAX(a->physical_start + a->block_count, b->physical_start + b->block_count);
-    a->physical_start = start;
-    a->block_count = end - start;
+extern "C" {
+#include "../runtime/defs.h"
 }
 
-static void insertion_sort_extents(Extent *arr, int n)
+void load_all_extents(DInode &di, std::vector<iExtent, MyAllocator<iExtent>> &out)   // 将该 inode 拥有的 iextent 都读取出来（应该是已经“规范化”了，有序+无法再合并）
 {
-    for (int i = 1; i < n; i++) 
-    {
-        Extent key = arr[i];
-        int j = i - 1;
-        while (j >= 0 && arr[j].physical_start > key.physical_start) 
-        {
-            arr[j + 1] = arr[j];
-            j--;
-        }
-        arr[j + 1] = key;
-    }
-}
+    // log_info("load_all_extents() START");
 
-static int merge_sorted_extents(const Extent *sortedarr, int n, Extent *out)
-{
-    if (n == 0) return 0;
-
-    int m = 0;
-    out[m++] = sortedarr[0];
-    for (int i = 1; i < n; i++) 
-    {
-        Extent const *cur = &sortedarr[i];
-        Extent *last = &out[m - 1];
-        if (extent_overlaps_or_adjacent(last, cur)) extent_merge_into(last, cur); 
-        else out[m++] = *cur;
-    }
-    return m;
-}
-
-typedef enum {
-    FREE_OK,            // inserted and merged successfully, leaf written back
-    FREE_NEED_SPLIT,    // insertion would overflow leaf even after merge; caller should split
-    FREE_ERROR          // error (e.g., corrupted tree or I/O fail)
-} FreeResult;
-
-static FreeResult insert_extent_into_leaf(ExtentLeafNode *leaf, const Extent *e)   // Try to insert `e` into the provided leaf (in-memory)
-{
-    if (!leaf) return FREE_ERROR;
-    if (leaf->valid_count > MAX_EXTENTS_PER_LEAF) return FREE_ERROR;    // corrupted
-
-    Extent tmp[MAX_EXTENTS_PER_LEAF + 1];
-    uint32_t n = leaf->valid_count;
-    memcpy(tmp, leaf->entries, n * sizeof(Extent));
-    tmp[n++] = *e;
-
-    insertion_sort_extents(tmp, n);
-
-    Extent merged[MAX_EXTENTS_PER_LEAF + 1];
-    uint32_t m = merge_sorted_extents(tmp, n, merged);
-
-    if (m > MAX_EXTENTS_PER_LEAF) return FREE_NEED_SPLIT;   // can't fit even after merging
-
-    memset(leaf->entries, 0, sizeof(leaf->entries));   // 清空 entries
-    memcpy(leaf->entries, merged, m * sizeof(Extent)); // copy `merged` back to `leaf`
-    leaf->valid_count = m;
-
-    return FREE_OK;
-}
-
-static BlockID find_leaf_for_extent(const Extent *e)   // 查找该 extent 所属的叶结点
-{
-    ExtentTreeNode node;
-    BlockID cur = sb.extent_root_block;
-    for (int depth_guard = 0; depth_guard < 10; depth_guard++) 
-    {
-        read_block(cur, &node);
-        uint16_t type = *((uint16_t*)(&node) + 1);
-        if (type == LEAF) return cur;
-
-        ExtentIndexNode *idx = &node.index;
-        int pick = 0;
-        for (int i = 0; i < idx->valid_count; i++)    // choose child: largest index with key <= e.start   （可以用二分来优化）
-        {
-            if (idx->entries[i].key <= e->physical_start) pick = i;
-            else break;
-        }
-        cur = idx->entries[pick].child_block;
-    }
-}
-
-bool free_extent(Extent e)
-{
-    if (e.block_count == 0) return FREE_OK;
-
-    ExtentTreeNode node;
-    BlockID leaf_block = find_leaf_for_extent(&e);
-    read_block(leaf_block, &node);   // 该结点的类型应当是 LEAF
-
-    if (insert_extent_into_leaf(&node.leaf, &e) == FREE_OK)
-    {
-        write_block(leaf_block, &node);
-        return true;
-    }
-
-    return false;
-}
-
-
-// BlockID split_leaf_and_insert(BlockID leaf, Extent e)   // 分裂叶子结点，并插入新 extent
-// {
-//     ExtentTreeNode old_node;
-//     read_block(leaf, &old_node);
-//     ExtentLeafNode* old_leaf = &old_node.leaf;
-
-//     Extent tmp[MAX_EXTENTS_PER_LEAF + 1];
-//     memcpy(tmp, old_leaf->entries, old_leaf->valid_count * sizeof(Extent));
-//     tmp[old_leaf->valid_count] = e;
-//     uint32_t total = old_leaf->valid_count + 1;
-
-//     insertion_sort_extents(tmp, total);
-
-//     uint32_t left_count = total / 2;
-//     uint32_t right_count = total - left_count;
-
-//     // 创建新叶子节点，分配新块号
-//     BlockID new_leaf_block = alloc_block(); // 你需要实现这个，申请一个空闲块号
-//     ExtentTreeNode new_node = {0};
-//     ExtentLeafNode *new_leaf = &new_node.leaf;
-
-//     new_leaf->magic = EXTENT_LEAF_MAGIC;
-//     new_leaf->type = LEAF;
-//     new_leaf->valid_count = right_count;
-//     new_leaf->prev_leaf = leaf;
-//     new_leaf->next_leaf = old_leaf->next_leaf;
-
-//     // 新叶子写入右半部分extent
-//     memcpy(new_leaf->entries, &tmp[left_count], right_count * sizeof(Extent));
-
-//     // 老叶子写入左半部分extent
-//     memset(old_leaf->entries, 0, sizeof(old_leaf->entries));
-//     memcpy(old_leaf->entries, tmp, left_count * sizeof(Extent));
-//     old_leaf->valid_count = left_count;
-
-//     // 更新双向链表指针
-//     if (old_leaf->next_leaf != 0) {
-//         // 读取 old next leaf 更新它的 prev_leaf
-//         ExtentTreeNode next_node;
-//         read_block(old_leaf->next_leaf, &next_node);
-//         next_node.leaf.prev_leaf = new_leaf_block;
-//         write_block(old_leaf->next_leaf, &next_node);
-//     }
-//     old_leaf->next_leaf = new_leaf_block;
-
-//     // 写回两个叶子节点
-//     write_block(leaf, &old_node);
-//     write_block(new_leaf_block, &new_node);
-
-//     // 新叶子最小 key 用于索引提升
-//     BlockID new_key = new_leaf->entries[0].physical_start;
-
-//     // 提升到父节点（递归插入）
-//     insert_index(sb.extent_root_block, new_key, new_leaf_block);
-
-//     return new_leaf_block;
-// }
-
-
-
-bool alloc_from_leaf(ExtentLeafNode *leaf, uint64_t size, Extent *result)  // 从该叶结点中能否分配出一个 extent
-{
-    for (uint32_t i = 0; i < leaf->valid_count; i++) 
+	out.clear();
+	for (int i = 0; i < DIRECT_EXTENT_NUM; i++) 
 	{
-        Extent *e = &leaf->entries[i];
-        if (e->block_count >= size)   // 可以分配
-		{
-            *result = (Extent){ .physical_start = e->physical_start, .block_count = size };
-
-            if (e->block_count == size)  // 完全匹配，删除这个 extent
-			{
-                for (uint32_t j = i + 1; j < leaf->valid_count; j++)
-                    leaf->entries[j - 1] = leaf->entries[j];
-                leaf->valid_count--;
-            } 
-			else  // 分裂，保留右半部分
-			{
-                e->physical_start += size;
-                e->block_count    -= size;
-            }
-            return true;
-        }
+        const iExtent &e = di.direct_extents[i];
+        if (e.block_count == 0) break;        // 遇到 iExtent{0,0,0}（结束标记）即退出
+        out.push_back(e);
     }
-    return false;
-}
-bool alloc_from_node(BlockID block_id, uint64_t size, Extent *result)  // 判断从该结点中能否分配出一个 extent
-{
-    ExtentTreeNode node;
-    // readObj(&node, sizeof(node), block_id, 1);
-    read_block(block_id, &node);
-
-    uint16_t type = *((uint16_t*)(&node) + 1);
-    if (type == LEAF) 
+	
+	const size_t cap = BLOCK_SIZE / sizeof(iExtent);
+	std::vector<iExtent, MyAllocator<iExtent>> buf(cap);
+	read_block(di.indirect_extent_block, buf.data());
+	for (int i = 0; i < cap; i++)
 	{
-		if (alloc_from_leaf(&node.leaf, size, result))    // 若分配成功则 node 会发生变化，需要重新写入
-		{
-			// writeObj(&node, sizeof(node), block_id, 1);
-            write_block(block_id, &node);
-			return true;
-		}
-	}
-	else if (type == INDEX)
-	{
-		ExtentIndexNode* idx = &node.index;
-		for (uint32_t i = 0; i < idx->valid_count; i++)   // 遍历所有子树
-			if (alloc_from_node(idx->entries[i].child_block, size, result)) return true;
+		if (buf[i].block_count == 0) break;   // 遇到 iExtent{0,0,0}（结束标记）即退出
+		out.push_back(buf[i]);
 	}
 
-	return false;
+    // log_info("load_all_extents() OVER");
 }
-bool alloc_extent(uint64_t size, Extent *result)
+void normalize_extent(std::vector<iExtent, MyAllocator<iExtent>> &exts) 
 {
-    return alloc_from_node(sb.extent_root_block, size, result);
+    if (exts.empty()) return;
+
+    std::sort(exts.begin(), exts.end(), [](auto &a, auto &b){ return a.logical_start < b.logical_start; });
+    exts.erase(std::remove_if(exts.begin(), exts.end(), [](const iExtent &e) { return e.block_count == 0; }), exts.end());
+
+    std::vector<iExtent, MyAllocator<iExtent>> v;
+    v.reserve(exts.size());
+    v.push_back(exts[0]);
+    for (int i = 1; i < exts.size(); i++) 
+	{
+        auto &prev = v.back();
+        const auto &cur = exts[i];
+        
+        if (prev.logical_start  + prev.block_count == cur.logical_start && prev.physical_start + prev.block_count == cur.physical_start)  // 逻辑连续且物理也紧邻
+            prev.block_count += cur.block_count;
+		else v.push_back(cur);
+    }
+    exts.swap(v);
+}
+void store_all_extents(DInode &di, std::vector<iExtent, MyAllocator<iExtent>> &exts)
+{
+    // log_info("store_all_extents() START");
+
+    normalize_extent(exts);
+    
+	size_t n = exts.size();
+	size_t nd = MIN(n, DIRECT_EXTENT_NUM);
+	for (int i = 0; i < nd; i++) di.direct_extents[i] = exts[i];
+	for (int i = nd; i < DIRECT_EXTENT_NUM; i++) di.direct_extents[i] = iExtent{0, 0, 0};  // 若存在则填充为0
+	
+	int remain = (n > nd) ? (n - nd) : 0;
+	if (remain == 0) return;
+
+	const size_t cap = BLOCK_SIZE / sizeof(iExtent);
+    std::vector<iExtent, MyAllocator<iExtent>> buf(cap);
+    size_t to_copy = MIN(remain, cap);
+	for (int i = 0; i < to_copy; i++) buf[i] = exts[nd + i];
+	if (to_copy < cap) buf[to_copy] = iExtent{0, 0, 0};    // 结束标记
+	write_block(di.indirect_extent_block, buf.data());
+
+    // log_info("store_all_extents() OVER");
+}
+
+
+static void bitmap_set_range(unsigned long *bm, uint64_t start, uint64_t len, bool one) 
+{
+    if (one)
+        for (uint64_t i = 0; i < len; i++) bitmap_set(bm, start + i);
+    else
+        for (uint64_t i = 0; i < len; i++) bitmap_clear(bm, start + i);
+}
+static uint64_t alloc_oneextent_from_group(int gid, uint64_t cnt, Extent &res)   // 从该组中尝试分配一个extent（长度至多为cnt）
+{
+    if (cnt == 0 || gid == -1) return 0;
+
+    BlockID bm_start, datablock_start;
+	get_group_by_gid(gid, &bm_start, &datablock_start);
+	// unsigned long bm[BMAPNUM_PERGROUP * BLOCK_SIZE / sizeof(unsigned long)];  // 读取该组的 bitmap
+    size_t bm_size_bytes = BMAPNUM_PERGROUP * BLOCK_SIZE;
+    // unsigned long* bm = (unsigned long*)smalloc(bm_size_bytes);
+    char* raw_buffer = new char[bm_size_bytes];
+    unsigned long* bm = reinterpret_cast<unsigned long*>(raw_buffer);
+    if (!bm) 
+    {
+        log_info("[ERROR] new() failed in alloc_extents_from_group");
+        return 0;
+    }
+    for (int j = 0; j < BMAPNUM_PERGROUP; ++j) read_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));
+    
+    if (bitmap_popcount(bm, DATABLOCKS_PERGROUP) == DATABLOCKS_PERGROUP) 
+    {
+        // sfree(bm);
+        delete[] raw_buffer;
+        return 0;
+    }
+    if (cnt > (uint64_t)DATABLOCKS_PERGROUP) cnt = DATABLOCKS_PERGROUP;
+
+    uint64_t current_count = 0, startbit;
+    for (int i = 0; i < DATABLOCKS_PERGROUP; i++)
+    {
+        bool is_free = !bitmap_test(bm, i);
+        if (is_free) 
+        {
+            if (current_count == 0) startbit = i;  // 标记空闲区起始位
+            current_count++;
+        }
+        else if (!is_free && current_count == 0) continue;
+        
+        if ((!is_free && current_count > 0) || current_count == cnt)
+        {
+            res = Extent{ .physical_start = datablock_start + startbit, .block_count = current_count };
+            bitmap_set_range(bm, startbit, current_count, 1);
+            for (int j = 0; j < BMAPNUM_PERGROUP; ++j) write_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));   // 其实可以优化为“只回写受影响块”
+            // sfree(bm);
+            delete[] raw_buffer;
+            return current_count;
+        }
+    }
+
+    if (current_count > 0)
+    {
+        res = Extent{ .physical_start = datablock_start + startbit, .block_count = current_count };
+        bitmap_set_range(bm, startbit, current_count, 1);
+        for (int j = 0; j < BMAPNUM_PERGROUP; ++j) write_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));  // 其实可以优化为“只回写受影响块”
+        // sfree(bm);
+        delete[] raw_buffer;
+        return current_count;
+    }
+
+    // 理论上不会执行到这里（因为若该 group 中已不存在空闲块，则会在 bitmap_popcount() 判断中即return）
+    // sfree(bm);
+    delete[] raw_buffer;
+    return 0; 
+}
+
+// 在同一 group 内，尽量用若干个 extent 累加到 cnt 块；返回实际分到的块数。
+// static uint64_t alloc_extents_from_group(int gid, uint64_t cnt, std::vector<Extent> &res)    // 这种写法可能会有多次的 bitmap IO
+// {
+//     if (cnt == 0 || gid == -1) return 0;
+
+//     uint64_t taken = 0;
+//     while (taken < cnt)
+//     {
+//         const uint64_t need = cnt - taken;
+//         Extent e;
+//         uint64_t got = alloc_oneextent_from_group(gid, need, e);
+//         if (got == 0) break;  // 该 group 已无可分配的空闲 extent
+//         res.push_back(e);
+//         taken += got;
+//     }
+
+//     return taken;
+// }
+
+
+// 在同一 group 内，尽量用若干个 extent 累加到 cnt 块；返回实际分到的块数。
+static uint64_t alloc_extents_from_group(int gid, uint64_t cnt, std::vector<Extent, MyAllocator<Extent>> &res)  // 考虑使用 buddy system 进行优化
+{
+    if (cnt == 0 || gid == -1) return 0;
+
+    BlockID bm_start, datablock_start;
+	get_group_by_gid(gid, &bm_start, &datablock_start);
+	// unsigned long bm[BMAPNUM_PERGROUP * BLOCK_SIZE / sizeof(unsigned long)];  // 读取该组的 bitmap
+    size_t bm_size_bytes = BMAPNUM_PERGROUP * BLOCK_SIZE;
+    char* raw_buffer = new char[bm_size_bytes];
+    unsigned long* bm = reinterpret_cast<unsigned long*>(raw_buffer);
+    // unsigned long* bm = (unsigned long*)smalloc(bm_size_bytes);
+    if (!bm) 
+    {
+        log_info("[ERROR] new() failed in alloc_extents_from_group");
+        return 0;
+    }
+    for (int j = 0; j < BMAPNUM_PERGROUP; j++) read_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));
+    
+    if (bitmap_popcount(bm, DATABLOCKS_PERGROUP) == DATABLOCKS_PERGROUP) 
+    {
+        // sfree(bm);
+        delete[] raw_buffer;
+        return 0;
+    }
+
+    if (cnt > (uint64_t)DATABLOCKS_PERGROUP) cnt = DATABLOCKS_PERGROUP;
+
+    uint64_t taken = 0, current_count = 0, startbit;
+    for (int i = 0; i < DATABLOCKS_PERGROUP; i++)
+    {
+        bool is_free = !bitmap_test(bm, i);
+        if (is_free) 
+        {
+            if (current_count == 0) startbit = i;  // 标记空闲区起始位
+            current_count++;
+        }
+        else if (!is_free && current_count == 0) continue;
+
+        if ((taken + current_count == cnt) || (!is_free && current_count > 0)) 
+        {
+            res.push_back(Extent{ .physical_start = datablock_start + startbit, .block_count = current_count });
+            bitmap_set_range(bm, startbit, current_count, 1);
+            taken += current_count;
+            current_count = 0;
+            break;
+        }
+    }
+
+    if (current_count > 0)
+    {
+        res.push_back(Extent{ .physical_start = datablock_start + startbit, .block_count = current_count });
+        bitmap_set_range(bm, startbit, current_count, 1);
+        taken += current_count;
+    }
+
+    for (int j = 0; j < BMAPNUM_PERGROUP; j++) write_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));  // 其实可以优化为“只回写受影响块”（不过如果bitmap只有1块就无所谓了）
+    // sfree(bm);
+    delete[] raw_buffer;
+    return taken;
+}
+
+bool alloc_extents(uint64_t lba_count, std::vector<Extent, MyAllocator<Extent>> &res)    
+{
+    if (lba_count == 0) return true;
+    res.clear();
+
+    struct kthread *k = myk();
+	unsigned int coreid = k->curr_cpu;
+
+    int loop = 0;
+    uint64_t need = lba_count;
+    while (need > 0 && loop < sb.group_num)
+    {
+        uint64_t got = alloc_extents_from_group(core_to_group[coreid], need, res);
+        if (got >= need) { need = 0; break; }
+        need -= got;
+        set_newgroup(coreid);
+        loop++;  // 避免死循环
+    }
+
+    return (need == 0);
+}
+
+void free_oneextent(iExtent &e, uint64_t startblk)  // free_oneextent(e, 0) 即释放整个 extent
+{
+    // log_info("free_oneextent() START");
+
+    if (startblk >= e.block_count) return; // 视为成功
+
+    BlockID  start_to_free = e.physical_start + startblk;  // 所要释放的起始块
+    uint64_t count_to_free = e.block_count - startblk;     // 所要释放的块数
+
+    int gid;
+    BlockID bm_start, datablock_start;
+    get_group_by_blkid(start_to_free, &gid, &bm_start, &datablock_start);
+    // log_info("group id: %d, bm_start: %llu, datablock_start: %llu", gid, bm_start, datablock_start);
+    
+    // DEFINE_BITMAP(bm, BMAPNUM_PERGROUP * BLOCK_SIZE * 8);
+    size_t bm_size_bytes = BMAPNUM_PERGROUP * BLOCK_SIZE;
+    // unsigned long* bm = (unsigned long*)smalloc(bm_size_bytes);
+    char* raw_buffer = new char[bm_size_bytes];
+    unsigned long* bm = reinterpret_cast<unsigned long*>(raw_buffer);
+    if (!bm) 
+    {
+        log_info("[ERROR] new() failed in free_oneextent");
+        return;
+    }
+    for (int j = 0; j < BMAPNUM_PERGROUP; j++) read_block(bm_start + j, (char*)bm + j * BLOCK_SIZE);
+
+    uint64_t bit_offset = start_to_free - datablock_start;
+    bitmap_set_range(bm, bit_offset, count_to_free, 0);
+    for (int j = 0; j < BMAPNUM_PERGROUP; j++) write_block(bm_start + j, (char*)bm + j * BLOCK_SIZE);  // 其实可以优化为“只回写受影响块”（不过如果bitmap只有1块就无所谓了）
+
+    e.block_count = startblk;
+
+    // sfree(bm);
+    delete[] raw_buffer;
+    // log_info("free_oneextent() OVER");
+}
+
+
+void read_extentS(const std::vector<iExtent, MyAllocator<iExtent>> &exts, uint64_t off, void* buf, uint64_t len)
+{
+    // log_info("read_extentS() START");
+
+    if (len == 0) return;
+
+    uint64_t taken = 0;
+    for (const auto &e : exts)
+    {
+        uint64_t e_L = e.logical_start * BLOCK_SIZE, e_R = (e.logical_start + e.block_count) * BLOCK_SIZE;  // 该 extent 覆盖的字节区间：[e_L, e_R)
+        uint64_t s = MAX(off, e_L), t = MIN(off + len, e_R);
+        if (s >= t) continue;   // 该 extent 不与 [off, off+len) 重叠
+
+        uint64_t off0  = s - e_L;
+        uint64_t size0 = t - s;
+        read_extent(&e, off0, (char*)buf + taken, size0);
+
+        taken += size0;
+        if (taken == len) break;
+    }
+
+    // log_info("read_extentS() OVER");
+}
+
+void write_extentS(const std::vector<iExtent, MyAllocator<iExtent>> &exts, uint64_t off, const char* buf, uint64_t len)
+{
+    // log_info("write_extentS() START");
+
+    if (len == 0) return;
+
+    uint64_t remaining = len;
+    for (const auto &e : exts)
+    {
+        uint64_t e_L = e.logical_start * BLOCK_SIZE, e_R = (e.logical_start + e.block_count) * BLOCK_SIZE;  // 该 extent 覆盖的字节区间：[e_L, e_R)
+        uint64_t s = MAX(off, e_L), t = MIN(off + len, e_R);
+        if (s >= t) continue;   // 该 extent 不与 [off, off+len) 重叠
+
+        uint64_t off0  = s - e_L;
+        uint64_t size0 = t - s;
+        if (buf == NULL) write_extent(&e, off0, NULL, size0);  // buf 为 NULL 时填充 0
+        else write_extent(&e, off0, buf + s - off, size0); 
+
+        remaining -= size0;
+        if (remaining == 0) break;
+    }
+
+    // log_info("write_extentS() OVER");
+}
+
+void ensure_coverage(std::vector<iExtent, MyAllocator<iExtent>> &exts, uint64_t end)   // 确保 [0, end) 逻辑块区间被 extents 覆盖；若有缺口则分配并填充  （exts中的各extent在逻辑上应当是连续的）
+{
+    // log_info("ensure_coverage() START");
+
+    uint64_t start = 0;
+    if (!exts.empty()) 
+    {
+        iExtent& last = exts[exts.size() - 1];
+        start = last.logical_start + last.block_count;
+    }
+    if (start >= end) return;
+
+    // 存在缺口 [start, end)
+    uint64_t need = end - start;
+    std::vector<Extent, MyAllocator<Extent>> new_extents;
+    if (!alloc_extents(need, new_extents))
+    {
+        log_info("ERROR: fail to alloc extents in ensure_coverage()");
+        return;
+    }
+
+    // 将 new_extents 加入到 iExtent 中
+    uint64_t L = start;
+    for (const auto &e : new_extents) 
+    {
+        iExtent ni;
+        ni.logical_start  = L;
+        ni.physical_start = e.physical_start; 
+		ni.block_count    = e.block_count;
+        exts.push_back(ni);
+        L += ni.block_count;
+    }
+
+    normalize_extent(exts);
+
+    // log_info("ensure_coverage() OVER");
 }

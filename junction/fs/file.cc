@@ -207,6 +207,7 @@ long usys_ftruncate(int fd, off_t length) {
 }
 
 ssize_t usys_read(int fd, char *buf, size_t len) {
+  // uint64_t st = rdtsc();
   FileTable &ftbl = myproc().get_file_table();
   File *f = ftbl.Get(fd);
   if (unlikely(!f || !f->is_readable())) return -EBADF;
@@ -217,24 +218,35 @@ ssize_t usys_read(int fd, char *buf, size_t len) {
     int inum = f->get_inode()->get_inum();
 
     auto& cache = InodeCacheManager::instance();
-    std::shared_ptr<MInode> inode_ptr;
+    MInode* inode_ptr;
     cache.get(inum, inode_ptr);
+    // std::shared_ptr<MInode> inode_ptr = get_inode(inum);
 
-    log_info("inode num: %d", inode_ptr->inum);
-    log_info("file size: %lu", inode_ptr->disk_inode.file_size);
+    // log_info("inode num: %d", inode_ptr->inum);
+    // log_info("file size: %lu", inode_ptr->disk_inode.file_size);
 
-    char *data = (char*)read_file_content(inode_ptr);    // TBD
-    if (!data) return -1;
-    log_info("read file data successfully");
-    data[inode_ptr->disk_inode.file_size] = '\0';
-    log_info("data: %s", data);
+    // if (inode_ptr->disk_inode.file_size == 0) 
+    // {
+    //     release_inode(inode_ptr);
+    //     return 0;
+    // }
 
     size_t n = MIN(len, inode_ptr->disk_inode.file_size);
-    memcpy(buf, data, n);
-    free(data);
-    buf[n] = '\0';
-    // log_info("buf: %s", buf);
-    return static_cast<ssize_t>(inode_ptr->disk_inode.file_size);
+    read_file(inode_ptr, 0, buf, n);
+    // release_inode(inode_ptr);
+
+    // char *data = (char*)smalloc(inode_ptr->disk_inode.file_size);
+    // read_full_file(inode_ptr, data);    // TBD
+    // if (!data) return -1;
+    // log_info("read file data successfully");
+    // data[inode_ptr->disk_inode.file_size - 1] = '\0';
+
+    // memcpy(buf, data, n);
+    // sfree(data);
+    // buf[n] = '\0';
+    // uint64_t ed = rdtsc();
+    // log_info("[read] total duration: %lu us", (ed - st) / cycles_per_us);
+    return static_cast<ssize_t>(n);
   }
 
   Status<size_t> ret = f->Read(readable_span(buf, len), &f->get_off_ref());
@@ -253,6 +265,7 @@ ssize_t usys_readv(int fd, struct iovec *iov, int iovcnt) {
 }
 
 ssize_t usys_write(int fd, const char *buf, size_t len) {
+  uint64_t st = rdtsc();
   FileTable &ftbl = myproc().get_file_table();
   File *f = ftbl.Get(fd);
   if (unlikely(!f || !f->is_writeable())) return -EBADF;
@@ -262,18 +275,27 @@ ssize_t usys_write(int fd, const char *buf, size_t len) {
   // if (strncmp(buf, MYPREFIX, MYPREFIX_LEN) == 0)
   {
     int inum = f->get_inode()->get_inum();
-    log_info("WRITE | fd:%d, inodenum: %d", fd, inum);
+    // log_info("WRITE | fd:%d, inodenum: %d", fd, inum);
 
     auto& cache = InodeCacheManager::instance();
-    std::shared_ptr<MInode> inode_ptr;
-    cache.get(inum, inode_ptr);
-    ref_inode(inode_ptr);
 
-    log_info("disk inode num: %d", inode_ptr->disk_inode.idx);
+    uint64_t before_get_inode = rdtsc();
+    MInode* inode_ptr = get_inode(inum);
+    uint64_t after_get_inode = rdtsc();
 
-    size_t written = append_content(inode_ptr, buf, len);
+    // log_info("disk inode num: %d", inode_ptr->disk_inode.idx);
+
+    uint64_t before_append_content = rdtsc();
+    append_content(inode_ptr, buf, len);
+    uint64_t end_append_content = rdtsc();
+
     release_inode(inode_ptr);
-    return written;
+    uint64_t ed = rdtsc();
+
+    // log_info("[get_inode] duration: %lu us", (after_get_inode - before_get_inode) / cycles_per_us);
+    // log_info("[append_content] duration: %lu us", (end_append_content - before_append_content) / cycles_per_us);
+    // log_info("[write] total duration: %lu us", (ed - st) / cycles_per_us);
+    return len;
   }
 
   
@@ -511,9 +533,28 @@ long usys_fsync(int fd) {
   FileTable &ftbl = myproc().get_file_table();
   File *f = ftbl.Get(fd);
   if (unlikely(!f)) return -EBADF;
-  Status<void> ret = f->Sync();
-  if (!ret) return MakeCError(ret);
-  return 0;
+
+  if (f->get_inode() && f->get_inode()->get_mode() == SHAOFS)      // 其实是 sync(，后面要将其修改为 fsync  （TODO）
+  {
+    int inum = f->get_inode()->get_inum();
+    // log_info("fsync a file (fd: %d, inodenum: %d) in SHAOFS!", fd, inum);
+
+    // auto& cache = InodeCacheManager::instance();
+    // std::shared_ptr<MInode> inode_ptr;
+    // cache.get(inum, inode_ptr);
+    // log_info("inode_ptr->disk_inode.idx: %d", inode_ptr->disk_inode.idx);
+    // release_inode(inode_ptr);
+    
+    write_bm(imap, INODENUM, sb.imap_blockstart, sb.imap_blocknum);
+    flush_dirty_inodes();
+    flush_dirty_blocks();    // 需要放到最后
+  }
+  else
+  {
+    Status<void> ret = f->Sync();
+    if (!ret) return MakeCError(ret);
+    return 0;
+  }
 }
 
 long usys_dup(int oldfd) {
@@ -548,18 +589,21 @@ long usys_close(int fd) {
   if (f->get_inode() && f->get_inode()->get_mode() == SHAOFS)
   {
     int inum = f->get_inode()->get_inum();
-    log_info("Closing a file (fd: %d, inodenum: %d) in SHAOFS!", fd, inum);
+    // log_info("Closing a file (fd: %d, inodenum: %d) in SHAOFS!", fd, inum);
 
-    auto& cache = InodeCacheManager::instance();
-    std::shared_ptr<MInode> inode_ptr;
-    cache.get(inum, inode_ptr);
+    // std::shared_ptr<MInode> inode_ptr = get_inode(inum);
 
-    log_info("inode_ptr->disk_inode.idx: %d", inode_ptr->disk_inode.idx);
+    auto& cache = InodeCacheManager::instance(); 
+    MInode* inode_ptr;
+    cache.get(inum, inode_ptr);         // 理论上应该是包命中的（避免增加 refcount）
 
-    // release_inode(inode_ptr);
-    write_imap(imap);
-    flush_dirty_inodes();
-    flush_dirty_blocks();    // 需要放到最后
+    // log_info("inode_ptr->disk_inode.idx: %d", inode_ptr->disk_inode.idx);
+    release_inode(inode_ptr);
+
+    // test_write_disk();
+    // test_read_disk();
+
+    final_flush();
   } 
   
   if (!ftbl.Remove(fd)) return -EBADF;

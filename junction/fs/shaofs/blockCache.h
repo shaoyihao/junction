@@ -1,7 +1,7 @@
 #pragma once
 
 #include "base.h"
-#include "cache.h" 
+#include "LRU.h" 
 
 typedef struct BlockEntry
 {
@@ -11,7 +11,7 @@ typedef struct BlockEntry
 } BlockEntry;
 
 
-using BlockCacheManager = CacheSingleton<BlockID, BlockEntry>;
+using BlockCacheManager = LRUSingleton<BlockID, BlockEntry>;
 
 
 void block_cache_init(size_t capacity = DEFAULT_CACHE_SIZE);

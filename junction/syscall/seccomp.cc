@@ -153,7 +153,7 @@ extern "C" void syscall_trap_handler(int nr, siginfo_t *info,
                                      void *void_context) {
   k_ucontext *ctx = reinterpret_cast<k_ucontext *>(void_context);
 
-  if (unlikely(info->si_code != SYS_SECCOMP)) {
+  if (unlikely(info->si_code != SYS_SECCOMP)) {   // 因为其它原因导致的 SIGSYS 信号（而不是因为被 seccomp 截获）
     log_syscall_msg("Unexpected signal delivered to syscall handler", 0);
     syscall_exit(-1);
   }

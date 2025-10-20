@@ -12,6 +12,7 @@ add_library(fs
   procfs/procfs.cc
 
   shaofs/disk.cc
+  shaofs/group.cc
   shaofs/blockCache.cc
   shaofs/file.cc
   shaofs/dentry.cc

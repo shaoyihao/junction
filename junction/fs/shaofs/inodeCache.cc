@@ -1,194 +1,254 @@
 #include "inodeCache.h"
 #include "disk.h"
 #include "base.h"
+#include "file.h"
+#include "inode.h"
+#include "dentry.h"
 #include <vector>
 #include <mutex>
 #include <numeric>
 #include <random>
 #include <algorithm>
 
-int alloc_inode(file_type_t type, std::shared_ptr<MInode>& inode) 
+constexpr size_t NUM_INODE_LOCKS = 1024; // 锁的数量，通常是2的幂
+static spinlock_t g_inode_locks[NUM_INODE_LOCKS];
+
+static spinlock_t* get_lock_for_inum(int inum)  // 根据 inode 号获取对应的锁
 {
-    std::vector<int> b(CEIL(INODENUM, 64));
-    std::iota(b.begin(), b.end(), 0);
+    return &g_inode_locks[static_cast<unsigned int>(inum) % NUM_INODE_LOCKS];
+}
 
-    std::random_device rd;
-    std::mt19937 g(rd());
-    std::shuffle(b.begin(), b.end(), g);
+int alloc_inode(file_type_t type, MInode*& inode) 
+{
+    inode = nullptr;
 
-    for (int i : b)
-    // for (int i = 0; i < imap_size; i++)   // 寻找第一个空闲位
-    {
-        std::lock_guard<std::mutex> lock(imap_locks[i]);
-
-        if (imap[i] == ~0ULL) continue;  
-
-        for (int bit = 0; bit < 64; bit++)
+    for (int idx = 0; idx < INODENUM; idx++)
+        if (!bitmap_atomic_test_and_set(imap, idx))   // 原子地查找一个盘上未使用的inode
         {
-            if ((imap[i] & (1ULL << bit)) == 0) 
+            // 初始化 inode 内容
+            // MInode* new_inode = (MInode*)smalloc(sizeof(MInode));
+            MInode* new_inode = new MInode;
+            if (!new_inode)
             {
-                imap[i] |= (1ULL << bit);
-				int idx = i * 64 + bit;
-				if (idx >= INODENUM) 
-                {
-                    log_info("ERROR: No free inode!");
-                    return -1;
-                }
-				else    // 找到了一个空闲 inode
-				{
-					// write_imap(imap);  // 好像可以延时写，后面考虑进行优化
-
-                    // 初始化 inode 内容
-                    inode = std::make_shared<MInode>();
-                    inode->inum = idx;
-                    inode->refcnt = 1;
-                    inode->dirty = true;
-                    inode->valid = true;
-                    spin_lock_init(&inode->lock);
-
-                    inode->disk_inode.idx = idx;
-                    inode->disk_inode.used = true;
-                    inode->disk_inode.type = type;
-                    inode->disk_inode.nlink = 1;
-                    inode->disk_inode.file_size = 0;
-                    inode->disk_inode.indirect_extent_block = sb.indirect_block_start + idx;
-                    
-                    auto &cache = InodeCacheManager::instance();
-                    cache.put(idx, inode);    // 放到 inode cache 中
-
-					return idx;
-				}
+                log_info("[alloc_inode()] ERROR: new failed!");
+                bitmap_atomic_clear(imap, idx);
+                return -1;
             }
-        }
-    }
 
-    log_info("ERROR: No free inode!");
+            new_inode->inum = idx;
+            new_inode->refcnt = 1;     // 新分配的 inode refcnt 为 1
+            new_inode->dirty = true;   // 新分配的，需要写回磁盘
+            spin_lock_init(&new_inode->lock);
+            new_inode->disk_inode.idx                   = idx;
+            new_inode->disk_inode.used                  = true;
+            new_inode->disk_inode.type                  = type;
+            new_inode->disk_inode.nlink                 = 1;
+            new_inode->disk_inode.file_size             = 0;
+            new_inode->disk_inode.indirect_extent_block = sb.indirect_block_start + idx;
+            
+            auto &cache = InodeCacheManager::instance();
+            cache.put(idx, new_inode);
+
+            inode = new_inode;
+			return idx;
+        }
+
+    log_info("[ERROR] alloc_inode(): No free inode!");
     return -1;
 }
-void free_inode(int inum)    // 好像很少有场景需要 free，除非是删除文件（得考虑到 refcnt, TODO）
+void free_inum(int inum)    // 释放 inode，好像很少有场景需要 free，除非是删除文件
 {
     if (inum < 0 || inum >= INODENUM) return;
+    bitmap_atomic_clear(imap, inum);
+}
 
-    int idx    = inum / 64;
-    int offset = inum % 64;
 
-    std::lock_guard<std::mutex> lock(imap_locks[idx]);
-    if ((imap[idx] & (1ULL << offset)) == 0)
+void on_inode_evict(const int& key, MInode* inode)    // 将该 inode 从 inodeCache 中删除（即从内存中删除）
+{
+    if (inode == nullptr) return;
+    if (inode->refcnt > 0) 
     {
-        log_info("WARNING: inode %d already free", inum);
+        log_info("[on_inode_evict] ERROR: evict an Minode whose refcnt > 0. inum=%d, refcnt=%d", key, inode->refcnt);
         return;
     }
 
-    imap[idx] &= ~(1ULL << offset);   // 清除这个bit
-    // write_imap(imap);                 // 好像可以延时写，后面考虑进行优化
-
-    // 主动删除 inode cache 中的该 inode
-    // auto& cache = InodeCacheManager::instance();
-    // cache.erase(inum);
-}
-
-
-bool on_inode_evict(const int& key, std::shared_ptr<MInode>& inode) 
-{
-    return flush_inode(inode);  // 把 inode 写回磁盘（准确来说是 block cache）
+    flush_inode(inode);   // 把 inode 写回磁盘（准确来说是 block cache）
+    // log_info("Evicting inode %d, deleting memory.", key);
+    // sfree(inode); 
+    delete inode;
 }
 void init_inode_cache(size_t capacity) 
 {
     log_info("init inode cache ...");
     InodeCacheManager::instance(capacity).set_eviction_callback(on_inode_evict);
+
+    for (size_t i = 0; i < NUM_INODE_LOCKS; ++i) {
+        spin_lock_init(&g_inode_locks[i]);
+    }
 }
 
-std::shared_ptr<MInode> get_inode(int inum) 
+MInode* get_inode(int inum) 
 {
     auto& cache = InodeCacheManager::instance();
 
-    std::shared_ptr<MInode> inode_ptr;
+    MInode* inode_ptr = nullptr;
 
     if (cache.get(inum, inode_ptr))   // cache hit
     {
-        log_info("inode cache hit!");
+        // log_info("get_inode(%d): inodecache hit!", inum);
         ref_inode(inode_ptr);
         return inode_ptr;
     }
-    else                              // cache miss：从盘读取
+
+    // cache miss：从盘读取
+
+    // log_info("get_inode(%d): inodecache miss, acquiring spinlock...", inum);
+    SpinGuard guard(get_lock_for_inum(inum));
+
+    if (cache.get(inum, inode_ptr))    // 双重检查，在获取锁的期间，可能有另一个线程已经加载了这个 inode，所以需要再次检查缓存。
     {
-        log_info("inode cache miss!");
-        
-        DInode tmp_disk_inode;  
-        read_inode(inum, &tmp_disk_inode);
-
-        inode_ptr = std::make_shared<MInode>();
-        inode_ptr->inum = inum;
-        inode_ptr->disk_inode = tmp_disk_inode;
-        inode_ptr->refcnt = 1;
-        inode_ptr->dirty = false;
-        inode_ptr->valid = true;
-        spin_lock_init(&inode_ptr->lock);
-
-        cache.put(inum, inode_ptr);
+        // log_info("get_inode(%d): inodecache hit! (double-checked)", inum);
+        ref_inode(inode_ptr);
         return inode_ptr;
     }
+
+    // 确认缓存未命中，从磁盘加载
+    // log_info("get_inode(%d): confirmed inodecache miss, read inode from the disk, refcount = 1", inum);
+
+    DInode tmp_disk_inode;  
+    read_inode(inum, &tmp_disk_inode);
+    if (!tmp_disk_inode.used) 
+    {
+        log_info("[get_inode(%d)] ERROR: Trying to get an unused inode!", inum);
+        return nullptr;
+    }
+
+    inode_ptr = new MInode;
+    if (!inode_ptr)
+    {
+        log_info("[get_inode(%d)] ERROR: new failed!", inum);
+        return nullptr;
+    }
+    inode_ptr->inum = inum;
+    inode_ptr->disk_inode = tmp_disk_inode;
+    inode_ptr->refcnt = 1;
+    inode_ptr->dirty = false;
+    spin_lock_init(&inode_ptr->lock);
+
+    cache.put(inum, inode_ptr);
+    return inode_ptr;
 }
 
-void mark_inode_dirty(std::shared_ptr<MInode>& inode)
+void mark_inode_dirty(MInode* inode)
 {
-    spin_lock(&inode->lock);
+    if (inode == nullptr) return; // 安全检查
+
+    SpinGuard g(&inode->lock);
     inode->dirty = true;
-    spin_unlock(&inode->lock);
 }
 
-bool flush_inode(std::shared_ptr<MInode>& inode) 
+void flush_inode(MInode* inode)    // 将 Minode flush 到 blockCache 中（尽管可能 refcnt>0）
 {
-    spin_lock(&inode->lock);
-    if (inode->refcnt > 0)
-    {
-        log_info("ERROR: flush an inode whose refcnt > 0");   // 理论上 refcnt 为 0 的 inode 会出现在链表尾部，若链表尾部的 refcnt 都不为 0，说明 cache 中所有 inode 的 refcnt 都不会 0，此时应该说是 cache 的容量小了。
-        spin_unlock(&inode->lock);
-        return false;
-    }
+    if (inode == nullptr) return;       // 安全检查
 
-    if (inode->dirty == false)
-    {
-        spin_unlock(&inode->lock);
-        return true;
-    }
+    SpinGuard g(&inode->lock);
+    if (inode->dirty == false) return;  // 若不脏即不用 flush
 
+    // log_info("flushing inode %d to the blockcache", inode->inum);
     write_inode(inode->inum, &inode->disk_inode);
     inode->dirty = false;
-    spin_unlock(&inode->lock);
-    return true;
 }
 
-void ref_inode(std::shared_ptr<MInode>& inode) 
+void ref_inode(MInode* inode) 
 {
-    spin_lock(&inode->lock);
+    if (inode == nullptr) return;
+    
+    SpinGuard g(&inode->lock);
     inode->refcnt++;
-    spin_unlock(&inode->lock);
+    // log_info("increase ref count of inode [%d], current refcount: %d", inode->inum, inode->refcnt);
 }
 
-void release_inode(std::shared_ptr<MInode>& inode)     // 不使用的时候要及时release
+void release_inode(MInode*& inode)     // 减少一个内存 inode 的引用
 {
-    spin_lock(&inode->lock);
-    inode->refcnt--;
-    if (inode->refcnt == 0)
+    if (inode == nullptr) return;
+
     {
-        auto& cache = InodeCacheManager::instance();
+        SpinGuard g(&inode->lock);
+        inode->refcnt--;
+        // log_info("decrease ref count of inode [%d], current refcount: %d", inode->inum, inode->refcnt);
+        if (inode->refcnt)
+        {
+            inode = nullptr;
+            return;
+        }
+    }
+
+    // inode->refcnt == 0，下面判断是否删除该 inode&file
+    
+    SpinGuard guard(get_lock_for_inum(inode->inum));
+    if (inode->refcnt > 0)
+    {
+        // log_info("[release_inode] double check not pass, reject to release");
+        return;
+    }
+
+    auto& cache = InodeCacheManager::instance();
+    if (inode->disk_inode.nlink != 0)
+    {    
         cache.move_to_end(inode->inum);
     }
-    spin_unlock(&inode->lock);
+    else   // 硬链接为0，删除文件
+    {
+        // log_info("inode[%d]: refcnt=0 and nlink=0. Deleting.", inode->inum);
+        truncate_inode_data_locked(inode, 0);
+        free_inum(inode->inum);
+        cache.erase(inode->inum);
+        // sfree(inode);
+        delete inode;
+    }
 
     inode = nullptr;    // 将这个 inode pointer 置为 nullptr
+}
+
+void unlink_inode(MInode* dirinode, char *name, MInode* inode) 
+{
+    // log_info("unlink_inode() START for name '%s' in dir inode %d", name, dirinode->inum);
+
+    if (inode == nullptr || dirinode == nullptr) 
+    {
+        log_info("[unlink_inode()] ERROR: inode or dirinode is nullptr");
+        return;   
+    }
+
+    if (inode->disk_inode.type == DIRECTORY)   // 删除目录应使用 rmdir() 或 remove()
+    {
+        log_info("unlink_inode() ERROR: cannot unlink a directory"); 
+        return;
+    }
+
+    delete_dentry(dirinode, name);
+
+    {
+        SpinGuard g(&inode->lock);
+        inode->disk_inode.nlink--;
+        inode->dirty = true;
+        // log_info("[unlink_inode(%d)] current hardlink = %d", inode->inum, inode->disk_inode.nlink);
+    }
+
+    // log_info("unlink_inode() OVER");
 }
 
 void flush_dirty_inodes()
 {
     auto& cache = InodeCacheManager::instance();
-    cache.for_each_entry([](std::shared_ptr<MInode>& inode) {
-        if (inode->dirty) 
-        {
-            write_inode(inode->inum, &inode->disk_inode);
-            inode->dirty = false;
-        }
+    cache.for_each_entry([](MInode* inode) {
+        flush_inode(inode);
     });
-    log_info("flushed all the dirty inodes to the disk");
+    // log_info("flushed all the dirty inodes to the disk");
+}
+
+
+void print_inode(MInode *inode)
+{
+    log_info("----MInode [%d]:\nfilesize: %lu\nhard link: %u\nrefcnt: %d\ndirty:%d\n-----\n", inode->inum, inode->disk_inode.file_size, inode->disk_inode.nlink, inode->refcnt, inode->dirty);
 }

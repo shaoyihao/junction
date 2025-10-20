@@ -2,10 +2,11 @@
 #include "base.h"
 // #include "storage.h"
 #include <cstdint>
-#include <mutex>
 
 
 #define INODENUM_PER_BLOCK    16     // block_size / inode_size
+#define DATABLOCKS_PERGROUP   (BMAPNUM_PERGROUP * BLOCK_SIZE * 8)  // 4096*8=32768
+#define TOTALBLOCKS_PERGROUP  (BMAPNUM_PERGROUP + DATABLOCKS_PERGROUP) 
 
 
 typedef struct {
@@ -24,22 +25,19 @@ typedef struct {
 	BlockID        indirect_block_start;         // 第一个 indirect extent block
 	uint64_t       indirect_block_num;           // 等于 inode_num
 
-	BlockID        extentTree_blockstart;        // extent tree 起始块
-	uint64_t       extentTree_blocknum;          // extent tree 占用的块数
-	BlockID        extent_root_block;            // extent tree 的根结点
-
-	BlockID        data_blockstart;              // data 起始块
-	uint64_t       data_blocknum;                // data 占用的块数
+	int            group_num;                    // group 数目
+	BlockID        gmap_blockstart;              // group bitmap 起始块
+	uint64_t       gmap_blocknum;                // group bitmap 占用的块数（很难不是1）
 
 	int            root_inode;                   // root 目录对应的 inode 号
 } SuperBlock;
 
 extern SuperBlock sb;
 
-
-extern u_int64_t imap[];
+DECLARE_BITMAP(imap, INODENUM);
 extern int imap_size;
-extern std::mutex imap_locks[];
+
+DECLARE_BITMAP(gmap, BLOCK_SIZE * 8);
 
 
 typedef struct {
@@ -68,17 +66,20 @@ typedef struct {
 	char        pad[56];
 } DInode;     // disk inode
 
-
 extern "C" {
     void readObj(void* obj, size_t siz, uint64_t lba_start, uint32_t lba_count);
     void writeObj(void* obj, size_t siz, uint64_t lba_start, uint32_t lba_count);
 }
 
 void read_sb();
-void read_imap(u_int64_t *bm);
-void write_imap(u_int64_t *bm);
+void read_bm(unsigned long* bm, u_int64_t nbits, BlockID blockstart, u_int64_t blockcount);
+void write_bm(unsigned long* bm, u_int64_t nbits, BlockID blockstart, u_int64_t blockcount);
 
 
 uint64_t extent_size(const iExtent* ext);
-void* read_extent(const iExtent *ext, uint64_t offset, size_t size);
+void read_extent(const iExtent *ext, uint64_t offset, char* buf, size_t size);
 void write_extent(const iExtent *ext, uint64_t offset, const void *data, size_t size);
+
+
+void test_write_disk();
+void test_read_disk();

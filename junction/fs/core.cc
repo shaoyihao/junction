@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <spanstream>
 #include <utility>
+#include <cstring>
 
 #include "junction/base/string.h"
 #include "junction/fs/dev.h"
@@ -18,6 +19,7 @@
 #include "junction/fs/shaofs/file.h"
 #include "junction/fs/shaofs/blockCache.h"
 #include "junction/fs/shaofs/dentryCache.h"
+#include "junction/fs/shaofs/group.h"
 
 namespace junction {
 
@@ -316,12 +318,69 @@ long usys_mknodat(int dirfd, const char *pathname, mode_t mode, dev_t dev) {
   return 0;
 }
 
-long usys_mkdir(const char *pathname, mode_t mode) {
+long usys_mkdir(const char *pathname, mode_t mode) 
+{
+  if (strncmp(pathname, MYPREFIX, MYPREFIX_LEN) == 0)
+  {
+    char* realpath = new char[MAX_PATH_LEN];
+    strncpy(realpath, pathname + MYPREFIX_LEN, MAX_PATH_LEN - 1); 
+    realpath[MAX_PATH_LEN - 1] = '\0';
+
+    IEntry* ent = new IEntry;
+    if (realpath[0] == '/')   // 绝对路径
+    {
+      lookup(realpath, *ent);  // 解析该路径
+      int inum;
+      if (ent->code == 1)       // 新建目录
+      {
+          log_info("creating new dir: %s", ent->last_name);
+          MInode* newinode = create_file(ent->parent_ino, ent->last_name, DIRECTORY);
+          inum = newinode->inum;
+          Dirent entries[2] = {
+            {.inum = inum, .filetype = DIRECTORY, .name = "." },
+            {.inum = inum, .filetype = DIRECTORY, .name = ".."},
+          };
+
+          {
+            SpinGuard g(&newinode->lock);
+            write_file(newinode, 0, (char*)entries, sizeof(Dirent) * 2);
+          }
+          
+          // release_inode(ent->ino);
+          release_inode(newinode);
+          release_inode(ent->parent_ino);
+
+          auto& dentrycache = DentryCacheManager::instance();
+          dentrycache.put(realpath, inum);
+      }
+      else if (ent->code == 0)    // 完全匹配
+      {
+        log_info("this dir alreadly exists!");
+        inum = ent->ino->inum;
+        release_inode(ent->ino);
+        release_inode(ent->parent_ino);
+      }
+      else    // 路径错误
+      {
+        log_info("[usys_mkdir] ERROR: illegal pathname: %s", realpath);
+        delete[] realpath;
+        delete ent;
+        return -1;
+      } 
+    }
+    delete[] realpath;
+    delete ent;
+    final_flush();
+    return 0;
+  }
+  else
+  {
   Status<Entry> entry = LookupEntry(myproc().get_fs(), pathname);
   if (!entry) return MakeCError(entry);
   Status<void> ret = MkDir(*entry, mode);
   if (!ret) return MakeCError(ret);
   return 0;
+  }
 }
 
 long usys_mkdirat(int dirfd, const char *pathname, mode_t mode) {
@@ -333,11 +392,44 @@ long usys_mkdirat(int dirfd, const char *pathname, mode_t mode) {
 }
 
 long usys_unlink(const char *pathname) {
+  if (strncmp(pathname, MYPREFIX, MYPREFIX_LEN) == 0)
+  {
+    char* realpath = new char[MAX_PATH_LEN];
+    strncpy(realpath, pathname + MYPREFIX_LEN, MAX_PATH_LEN - 1); 
+    realpath[MAX_PATH_LEN - 1] = '\0';
+
+    IEntry* ent = new IEntry;
+    if (realpath[0] == '/')   // 绝对路径
+    {
+      lookup(realpath, *ent);  // 解析该路径
+      if (ent->code == 0)
+      {
+        log_info("found the inode [%d]", ent->ino->inum);
+        unlink_inode(ent->parent_ino, ent->last_name, ent->ino);
+        release_inode(ent->parent_ino);
+        release_inode(ent->ino);
+        delete[] realpath;
+        final_flush();
+        return 0;
+      }
+      else
+      {
+        log_info("[unlink()] ERROR: illegal pathname %s", realpath);
+        release_inode(ent->parent_ino);
+        release_inode(ent->ino);
+        delete[] realpath;
+        return -1;
+      }
+    }
+  }
+  else
+  {
   Status<Entry> entry = LookupEntry(myproc().get_fs(), pathname);
   if (!entry) return MakeCError(entry);
   Status<void> ret = Unlink(*entry);
   if (!ret) return MakeCError(ret);
   return 0;
+  }
 }
 
 long usys_rmdir(const char *pathname) {
@@ -419,61 +511,68 @@ long usys_renameat2(int olddirfd, const char *oldpath, int newdirfd,
   return 0;
 }
 
-long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
+long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) 
+{
   if (strncmp(pathname, MYPREFIX, MYPREFIX_LEN) == 0)   // 判断 pathname 是否具有指定前缀（从而识别用的是 shaofs）
   {
-    char realpath[MAX_PATH_LEN];
+    char* realpath = new char[MAX_PATH_LEN];
     strncpy(realpath, pathname + MYPREFIX_LEN, MAX_PATH_LEN - 1);  // 去除前缀，取出实际路径
     realpath[MAX_PATH_LEN - 1] = '\0';
 
-    // struct kthread *k = myk();
-    // if (k->blocks.top == 0)    // 还没有分配LBA，先分配一些
-    // {
-    //   block_pool_create(&k->blocks);
-    // }     
+    IEntry* ent = new IEntry;
+    if (!ent)
+    {
+      log_info("[openat()] ERROR: fail to new() IEntry");
+      return -1;
+    }
 
-    IEntry ent;
     if (realpath[0] == '/')   // 绝对路径
     {
-      ent = lookup(realpath);  // 解析该路径
+      // uint64_t before_lookup = rdtsc();
+      lookup(realpath, *ent);  // 解析该路径
+      // uint64_t after_lookup = rdtsc();
+
       int inum;
-      if (ent.code == 1)           // 部分匹配（可能是新建文件）
+      if (ent->code == 1)           // 部分匹配（可能是新建文件）
       {
         if (flags & kFlagCreate)   // 新建文件
         {
-    //       struct kthread *k = myk();
-    //       if (k->blocks.top == 0)    // 还没有分配LBA，先分配一些
-    //       {
-    //         block_pool_create(&k->blocks);
-    //       }      
-
-          log_info("creating new file: %s", ent.last_name);
-          std::shared_ptr<MInode> newinode = create_file(ent.ino, ent.last_name);
+          // log_info("creating new file: %s", ent->last_name);
+          MInode* newinode = create_file(ent->parent_ino, ent->last_name, REGULAR);
           inum = newinode->inum;
-          release_inode(ent.ino);
-          release_inode(newinode);
+          release_inode(ent->parent_ino);
+          // release_inode(newinode);   // 这个 ref 应当在 close() 中再释放
 
           auto& dentrycache = DentryCacheManager::instance();
           dentrycache.put(realpath, inum);
         }
         else   // 路径错误 
         {
-          log_info("ERROR: illegal pathname");
-          release_inode(ent.ino);
+          log_info("[usys_openat] ERROR: illegal pathname %s", realpath);
+          release_inode(ent->parent_ino);
+          delete[] realpath;
+          delete ent;
           return -1;
         }
       }
-      else if (ent.code == 0)    // 完全匹配
+      else if (ent->code == -1)   // 路径错误
       {
-        log_info("this file alreadly exists!");
-        inum = ent.ino->inum;
-        release_inode(ent.ino);
-      }
-      else    // 路径错误
-      {
-        log_info("ERROR: illegal pathname");
+        log_info("[usys_openat] ERROR: illegal pathname %s", realpath);
+        delete[] realpath;
+        delete ent;
         return -1;
       }
+      else    // 完全匹配
+      {
+        // log_info("this file alreadly exists!");
+        inum = ent->ino->inum;
+        release_inode(ent->parent_ino);
+        // release_inode(ent.ino);    // 这个 ref 应当在 close() 中再释放
+
+        delete[] realpath;
+        delete ent;
+      }
+      // log_info("[lookup] duration: %lu us", (after_lookup - before_lookup) / cycles_per_us);
 
       // 成功获取到 Inode
       Process &p = myproc();
@@ -485,6 +584,10 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode) {
 
       Status<std::shared_ptr<File>> f = std::make_shared<File>(FileType::kNormal, opflag, fmode, myinode);
       return ftbl.Insert(std::move(*f), (flags & kFlagCloseExec) > 0);
+    }
+    else
+    {
+      log_info("[openat(%s)] This is a relative path.", realpath);
     }
 
     // return thread_yield_waitIO();
@@ -665,12 +768,20 @@ long usys_lstat(const char *path, struct stat *statbuf) {
 }
 
 long usys_statfs(const char *path, struct statfs *buf) {
+  if (strncmp(path, MYPREFIX, MYPREFIX_LEN) == 0)
+  {
+    buf->f_bsize = buf->f_frsize = sb.block_size;
+    // TODO
+  }
+  else
+  {
   FSRoot &fs = myproc().get_fs();
   Status<std::shared_ptr<Inode>> tmp = LookupInode(fs, path, false);
   if (!tmp) return MakeCError(tmp);
   Status<void> stat = (*tmp)->GetStatFS(buf);
   if (!stat) return MakeCError(stat);
   return 0;
+  }
 }
 
 long usys_truncate(const char *path, off_t length) {
@@ -833,10 +944,13 @@ ino_t AllocateInodeNumber() {
 Status<void> InitMyFs()
 {
   read_sb();
-  read_imap(imap);
+  // read_imap(imap);
+  read_bm(imap, INODENUM,     sb.imap_blockstart, sb.imap_blocknum);
+  read_bm(gmap, sb.group_num, sb.gmap_blockstart, sb.gmap_blocknum);
   block_cache_init();
   init_inode_cache();
   init_dentryCache();
+  init_core_to_group();
 
   // page_pool_init(1024);  
   // log_info("init page pool");
