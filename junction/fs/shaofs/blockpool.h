@@ -32,6 +32,7 @@ public:
         SpinGuard g(&mtx);
 
         if (free_list.empty()) return NULL;
+        
         char* blk = free_list.back();
         free_list.pop_back();
         return blk;

@@ -40,8 +40,8 @@ public:
     void put(const ID& key, const Entry& value)  // 将一个 entry 放入 cache，若当前已经存在该 id 则进行覆盖；可能会导致 evict
     {
         bool need_evict = false;
-        Entry victim_data;
         ID victim_key;
+        Entry victim_data;
 
         {
             SpinGuard g(&mutex_);
@@ -89,12 +89,6 @@ public:
 
         auto it = map_.find(key);
         if (it == map_.end()) return false;
-
-        // if (on_evict && !on_evict(key, it->second.data))   // on_evict 函数中不应再获取 cache 的大锁
-        // {
-        //     log_info("[ERROR] cache erase: fail to evict");
-        //     return false;
-        // }
         
         lru_list.erase(it->second.lru_pos);
         map_.erase(it);
@@ -120,6 +114,12 @@ public:
             lru_list.splice(lru_list.end(), lru_list, entry.lru_pos);   // 将元素移动到链表末尾
             entry.lru_pos = --lru_list.end();                           // 更新 lru_pos
         }
+    }
+
+    bool contains(const ID& key)
+    {
+        SpinGuard g(&mutex_);
+        return map_.find(key) != map_.end();
     }
 
 private:

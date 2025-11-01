@@ -37,6 +37,12 @@ void read_extent(const iExtent *ext, uint64_t offset, char* buf, size_t size)   
 {
     if (ext->block_count == 0 || size == 0 || buf == NULL) return;
 
+	log_info("[read_extent()] START");
+
+	thread_t *th = thread_self();
+	uint64_t before_read_extent_tsc = rdtsc();
+	uint64_t before_read_extent = thread_get_total_cycles(th) / cycles_per_us;
+
 	char* tmp = tmp_block_pool->alloc_block();
 	size_t taken_size = 0;
 
@@ -69,8 +75,114 @@ void read_extent(const iExtent *ext, uint64_t offset, char* buf, size_t size)   
 
 	tmp_block_pool->free_block(tmp);
 
+	uint64_t after_read_extent = thread_get_total_cycles(th) / cycles_per_us;
+	uint64_t after_read_extent_tsc = rdtsc();
+	log_info("[read_extent()] duration: %lu us, actual time: %lu us", (after_read_extent_tsc - before_read_extent_tsc) / cycles_per_us, after_read_extent - before_read_extent);
     // readObj(buf, size, ext->physical_start, ext->block_count);
 }
+
+// void read_extent2(const iExtent *ext, uint64_t offset, char* buf, size_t size)   // 从磁盘上读取某个 extent 中从 offset 处长度为 size 的内容
+// {
+//     if (ext->block_count == 0 || size == 0 || buf == NULL) return;
+
+// 	log_info("[read_extent()] START");
+// 	thread_t *th = thread_self();
+// 	uint64_t before_read_extent_tsc = rdtsc();
+// 	uint64_t before_read_extent = thread_get_total_cycles(th) / cycles_per_us;
+
+// 	auto& cache = BlockCacheManager::instance();
+// 	size_t taken_size = 0;
+
+// 	uint64_t start_block_idx =  offset             / BLOCK_SIZE;
+// 	uint64_t end_block_idx   = (offset + size - 1) / BLOCK_SIZE;
+//     for (uint64_t i = start_block_idx; i <= end_block_idx; i++)
+// 	{
+// 		uint64_t current_lba = ext->physical_start + i;
+// 		BlockEntry block;
+// 		if (cache.get(current_lba, block))   // cache hit
+// 		{
+// 			if (i == start_block_idx)
+//             {
+//                 size_t block_offset = offset % BLOCK_SIZE;
+//                 size_t block_size = MIN(BLOCK_SIZE - block_offset, size);
+//                 memcpy(buf + taken_size, block.data + block_offset, block_size);
+//                 taken_size += block_size;
+//             }
+//             else if (i == end_block_idx)
+//             {
+//                 size_t tail_size = (offset + size) % BLOCK_SIZE; 
+//                 size_t block_size = tail_size > 0 ? tail_size : BLOCK_SIZE;
+//                 memcpy(buf + taken_size, block.data, block_size);
+//                 taken_size += block_size;
+//             }
+//             else
+//             {
+//                 memcpy(buf + taken_size, block.data, BLOCK_SIZE);
+//                 taken_size += BLOCK_SIZE;
+//             }
+// 		}
+// 		else   // cache miss
+// 		{
+// 			uint32_t miss_count = 1;
+// 			while (i + miss_count <= end_block_idx && !cache.contains(ext->physical_start + i + miss_count)) miss_count++;
+// 			size_t read_size = miss_count * BLOCK_SIZE;
+// 			char* buf = new char[read_size];
+// 			if (unlikely(buf == NULL))
+// 			{
+// 				log_info("[read_extent()] ERROR: Failed to alloc buffer");
+//                 return;
+// 			}
+// 			readObj(buf, read_size, current_lba, miss_count);
+// 			for (uint32_t j = 0; j < miss_count; j++)
+// 			{
+// 				uint64_t lba_in_miss = current_lba + j;
+//                 uint64_t real_i = i + j; 
+//                 char* block_data_ptr = buf + (j * BLOCK_SIZE);
+
+// 				BlockEntry new_block;
+//                 new_block.lba = lba_in_miss;
+//                 new_block.data = tmp_block_pool->alloc_block();
+//                 if (!new_block.data) 
+// 				{
+//                     log_info("[read_extent()] ERROR: block pool exhausted while caching merged read");
+//                     continue;
+//                 }
+//                 memcpy(new_block.data, block_data_ptr, BLOCK_SIZE);
+//                 new_block.dirty = false;
+//                 cache.put(lba_in_miss, new_block);
+
+// 				if (real_i == start_block_idx)
+//                 {
+//                     size_t block_offset = offset % BLOCK_SIZE;
+//                     size_t block_size = MIN(BLOCK_SIZE - block_offset, size);
+//                     memcpy(buf + taken_size, block_data_ptr + block_offset, block_size);
+//                     taken_size += block_size;
+//                 }
+//                 else if (real_i == end_block_idx)
+//                 {
+//                     size_t tail_size = (offset + size) % BLOCK_SIZE; 
+//                     size_t block_size = tail_size > 0 ? tail_size : BLOCK_SIZE;
+//                     memcpy(buf + taken_size, block_data_ptr, block_size);
+//                     taken_size += block_size;
+//                 }
+//                 else
+//                 {
+//                     memcpy(buf + taken_size, block_data_ptr, BLOCK_SIZE);
+//                     taken_size += BLOCK_SIZE;
+//                 }
+// 			}
+// 			delete[] buf;
+// 			i += (miss_count - 1);
+// 		}
+// 	}
+
+// 	uint64_t after_read_extent = thread_get_total_cycles(th) / cycles_per_us;
+// 	uint64_t after_read_extent_tsc = rdtsc();
+// 	log_info("[read_extent()] duration: %lu us, actual time: %lu us", (after_read_extent_tsc - before_read_extent_tsc) / cycles_per_us, after_read_extent - before_read_extent);
+// }
+
+
+
 void write_extent(const iExtent *ext, uint64_t offset, const void *data, size_t size)   // 从该 extent 的 offset（B）处起，写入 size 长度数据
 {
 	size_t total_capacity = extent_size(ext);    // 该 extent 的总容量

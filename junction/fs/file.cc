@@ -215,6 +215,10 @@ ssize_t usys_read(int fd, char *buf, size_t len) {
   if (f->get_inode() && f->get_inode()->get_mode() == SHAOFS)
   // if (strncmp(buf, "FSHAO2:", 7) == 0)
   {
+    int64_t before_read = mythread().GetRuntime().Microseconds();
+    uint64_t before_read_tsc = rdtsc();
+    log_info("[read() START] current time: %lu us", before_read);
+
     int inum = f->get_inode()->get_inum();
 
     auto& cache = InodeCacheManager::instance();
@@ -246,6 +250,10 @@ ssize_t usys_read(int fd, char *buf, size_t len) {
     // buf[n] = '\0';
     // uint64_t ed = rdtsc();
     // log_info("[read] total duration: %lu us", (ed - st) / cycles_per_us);
+    int64_t after_read = mythread().GetRuntime().Microseconds();
+    uint64_t after_read_tsc = rdtsc();
+
+    log_info("[read()] total time: %lu us, actual time: %lu us", (after_read_tsc - before_read_tsc) / cycles_per_us, after_read - before_read);
     return static_cast<ssize_t>(n);
   }
 
@@ -274,6 +282,10 @@ ssize_t usys_write(int fd, const char *buf, size_t len) {
   if (f->get_inode() && f->get_inode()->get_mode() == SHAOFS)
   // if (strncmp(buf, MYPREFIX, MYPREFIX_LEN) == 0)
   {
+    int64_t before_write = mythread().GetRuntime().Microseconds();
+    uint64_t before_write_tsc = rdtsc();
+    log_info("[write() START] current time: %lu us", before_write);
+
     int inum = f->get_inode()->get_inum();
     // log_info("WRITE | fd:%d, inodenum: %d", fd, inum);
 
@@ -295,6 +307,10 @@ ssize_t usys_write(int fd, const char *buf, size_t len) {
     // log_info("[get_inode] duration: %lu us", (after_get_inode - before_get_inode) / cycles_per_us);
     // log_info("[append_content] duration: %lu us", (end_append_content - before_append_content) / cycles_per_us);
     // log_info("[write] total duration: %lu us", (ed - st) / cycles_per_us);
+
+    int64_t after_write = mythread().GetRuntime().Microseconds();
+    uint64_t after_write_tsc = rdtsc();
+    log_info("[write()] total time: %lu us, actual time: %lu us", (after_write_tsc - before_write_tsc) / cycles_per_us, after_write - before_write);
     return len;
   }
 
@@ -588,6 +604,10 @@ long usys_close(int fd) {
   File *f = ftbl.Get(fd);
   if (f->get_inode() && f->get_inode()->get_mode() == SHAOFS)
   {
+    int64_t before_close = mythread().GetRuntime().Microseconds();
+    uint64_t before_close_tsc = rdtsc();
+    log_info("[close() START] current time: %lu us", before_close);
+
     int inum = f->get_inode()->get_inum();
     // log_info("Closing a file (fd: %d, inodenum: %d) in SHAOFS!", fd, inum);
 
@@ -604,6 +624,10 @@ long usys_close(int fd) {
     // test_read_disk();
 
     final_flush();
+
+    int64_t after_close = mythread().GetRuntime().Microseconds();
+    uint64_t after_close_tsc = rdtsc();
+    log_info("[close()] total time: %lu us, actual time: %lu us", (after_close_tsc - before_close_tsc) / cycles_per_us, after_close - before_close);
   } 
   
   if (!ftbl.Remove(fd)) return -EBADF;

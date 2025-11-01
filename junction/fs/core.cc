@@ -515,6 +515,10 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
 {
   if (strncmp(pathname, MYPREFIX, MYPREFIX_LEN) == 0)   // 判断 pathname 是否具有指定前缀（从而识别用的是 shaofs）
   {
+    int64_t before_open = mythread().GetRuntime().Microseconds();
+    uint64_t before_open_tsc = rdtsc();
+    log_info("[openat() START] current time: %ld us", before_open);
+
     char* realpath = new char[MAX_PATH_LEN];
     strncpy(realpath, pathname + MYPREFIX_LEN, MAX_PATH_LEN - 1);  // 去除前缀，取出实际路径
     realpath[MAX_PATH_LEN - 1] = '\0';
@@ -528,17 +532,23 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
 
     if (realpath[0] == '/')   // 绝对路径
     {
-      // uint64_t before_lookup = rdtsc();
+      int64_t before_lookup = mythread().GetRuntime().Microseconds();
       lookup(realpath, *ent);  // 解析该路径
-      // uint64_t after_lookup = rdtsc();
+      int64_t after_lookup = mythread().GetRuntime().Microseconds();
+      log_info("[lookup()] acutual time: %ld", after_lookup - before_lookup);
+
 
       int inum;
       if (ent->code == 1)           // 部分匹配（可能是新建文件）
       {
         if (flags & kFlagCreate)   // 新建文件
         {
-          // log_info("creating new file: %s", ent->last_name);
+          log_info("creating new file: %s", ent->last_name);
+          int64_t before_create = mythread().GetRuntime().Microseconds();
           MInode* newinode = create_file(ent->parent_ino, ent->last_name, REGULAR);
+          int64_t after_create = mythread().GetRuntime().Microseconds();
+          log_info("[create_file()] acutual time: %ld", after_create - before_create);
+
           inum = newinode->inum;
           release_inode(ent->parent_ino);
           // release_inode(newinode);   // 这个 ref 应当在 close() 中再释放
@@ -572,7 +582,6 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
         delete[] realpath;
         delete ent;
       }
-      // log_info("[lookup] duration: %lu us", (after_lookup - before_lookup) / cycles_per_us);
 
       // 成功获取到 Inode
       Process &p = myproc();
@@ -581,6 +590,11 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
       auto [opflag, fmode] = FromFlags(flags);
       std::shared_ptr<Inode> myinode = std::make_shared<MyInode>(inum); 
       // log_info("ino_num: %lu", myinode->get_inum());
+
+      int64_t after_open = mythread().GetRuntime().Microseconds();
+      uint64_t after_open_tsc = rdtsc();
+      log_info("[open()] total time: %lu us, actual time: %lu us", (after_open_tsc - before_open_tsc) / cycles_per_us, after_open - before_open);
+    
 
       Status<std::shared_ptr<File>> f = std::make_shared<File>(FileType::kNormal, opflag, fmode, myinode);
       return ftbl.Insert(std::move(*f), (flags & kFlagCloseExec) > 0);

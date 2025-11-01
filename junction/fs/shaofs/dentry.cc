@@ -10,13 +10,14 @@
 
 void lookup(const char *pathname, IEntry& res)
 {
-    // log_info("[lookup(%s)] START", pathname);
+    log_info("[lookup(%s)] START", pathname);
     
     auto& dentrycache = DentryCacheManager::instance();
 
-    // char* path_copy = (char*)smalloc(MAX_PATH_LEN);
-    char* path_copy = new char[MAX_PATH_LEN];
+    thread_t *th = thread_self();
+    uint64_t before_split = thread_get_total_cycles(th) / cycles_per_us;
     
+    char* path_copy = new char[MAX_PATH_LEN];
     strncpy(path_copy, pathname, MAX_PATH_LEN);
     path_copy[MAX_PATH_LEN - 1] = '\0';
 
@@ -29,8 +30,6 @@ void lookup(const char *pathname, IEntry& res)
         token = strtok_r(NULL, "/", &saveptr); 
     }
     delete[] path_copy;
-    // log_info("[lookup(%s)] split the pathname SUCCESS", pathname);
-
 
     int prefix_hit_index;  // 表示命中到哪一层（parts.size() 表示完整路径，0 表示 "/"）
     int base_inode;
@@ -43,9 +42,10 @@ void lookup(const char *pathname, IEntry& res)
             prefix_hit_index = i;
             break;
         }
-    }
-    // 至少会命中到 “/”，此时 base_inode=0，prefix_hit_index=0
-    // log_info("[lookup(%s)] find the base inode [%d]", pathname, base_inode);
+    } // 至少会命中到 “/”，此时 base_inode=0，prefix_hit_index=0
+
+    uint64_t after_split = thread_get_total_cycles(th) / cycles_per_us;
+    log_info("[split_path] actual time: %lu us", after_split - before_split);
 
     // 基于 base_inode 搜索完整路径对应的 Inode
     MInode* current_inode = get_inode(base_inode), *last_inode = nullptr;
@@ -78,7 +78,6 @@ void lookup(const char *pathname, IEntry& res)
             // log_info("try to get inode[%d]'s lock", current_inode->inum);
             // SpinGuard g(&current_inode->lock);
             // log_info("get inode[%d]'s lock", current_inode->inum);
-            // uint64_t before_readfullfile = rdtsc();
 
             char* raw_buffer = new char[current_inode->disk_inode.file_size];
             Dirent* entries = reinterpret_cast<Dirent*>(raw_buffer);
@@ -93,8 +92,6 @@ void lookup(const char *pathname, IEntry& res)
             }
             read_full_file(current_inode, entries);
             // log_info("read full content of inode %d", current_inode->inum);
-            // uint64_t after_readfullfile = rdtsc();
-            // log_info("[readfullfile] duration: %lu us", (after_readfullfile - before_readfullfile) / cycles_per_us);
 
             int entry_count = current_inode->disk_inode.file_size / sizeof(Dirent);
             for (int j = 0; j < entry_count; ++j) 

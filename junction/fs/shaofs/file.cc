@@ -71,12 +71,18 @@ void read_file(MInode* inode, uint64_t oft, void* buf, uint64_t size)  // 从 of
 
 void read_full_file(MInode* inode, void* buf)
 {
+	uint64_t before_readfullfile_tsc = rdtsc();
+	thread_t *th = thread_self();
+	uint64_t before_readfullfile = thread_get_total_cycles(th) / cycles_per_us;
 	// log_info("read_full_file() START");
 
 	if (inode == nullptr || buf == nullptr) return;
 	read_file(inode, 0, buf, inode->disk_inode.file_size);
 
 	// log_info("read_full_file() OVER");
+	uint64_t after_readfullfile_tsc = rdtsc();
+	uint64_t after_readfullfile = thread_get_total_cycles(th) / cycles_per_us;
+    log_info("[readfullfile(%d)] duration: %lu us, actual time: %lu", inode->inum, (after_readfullfile_tsc - before_readfullfile_tsc) / cycles_per_us, after_readfullfile - before_readfullfile);
 }
 
 

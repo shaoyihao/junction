@@ -6,6 +6,7 @@ extern "C" {
 #include "base/bitmap.h"
 #include "asm/ops.h"
 #include "runtime/smalloc.h"
+#include "runtime/thread.h"
 }
 
 #ifndef BYTENUM

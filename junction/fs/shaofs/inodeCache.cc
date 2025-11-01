@@ -5,7 +5,6 @@
 #include "inode.h"
 #include "dentry.h"
 #include <vector>
-#include <mutex>
 #include <numeric>
 #include <random>
 #include <algorithm>
@@ -89,6 +88,10 @@ void init_inode_cache(size_t capacity)
 
 MInode* get_inode(int inum) 
 {
+    thread_t *th = thread_self();
+    uint64_t before_getinode = thread_get_total_cycles(th) / cycles_per_us, after_getinode;
+    uint64_t before_getinode_tsc = rdtsc(), after_getinode_tsc;
+
     auto& cache = InodeCacheManager::instance();
 
     MInode* inode_ptr = nullptr;
@@ -97,6 +100,9 @@ MInode* get_inode(int inum)
     {
         // log_info("get_inode(%d): inodecache hit!", inum);
         ref_inode(inode_ptr);
+        after_getinode_tsc = rdtsc();
+        after_getinode = thread_get_total_cycles(th) / cycles_per_us;
+        log_info("inodeCache HIT! [get_inode(%d)] duration: %lu us, actual time: %lu", inum, (after_getinode_tsc - before_getinode_tsc) / cycles_per_us, (after_getinode - before_getinode));
         return inode_ptr;
     }
 
@@ -109,6 +115,9 @@ MInode* get_inode(int inum)
     {
         // log_info("get_inode(%d): inodecache hit! (double-checked)", inum);
         ref_inode(inode_ptr);
+        after_getinode_tsc = rdtsc();
+        after_getinode = thread_get_total_cycles(th) / cycles_per_us;
+        log_info("inodeCache HIT! [get_inode(%d)] duration: %lu us, actual time: %lu", inum, (after_getinode_tsc - before_getinode_tsc) / cycles_per_us, (after_getinode - before_getinode));
         return inode_ptr;
     }
 
@@ -136,6 +145,9 @@ MInode* get_inode(int inum)
     spin_lock_init(&inode_ptr->lock);
 
     cache.put(inum, inode_ptr);
+    after_getinode_tsc = rdtsc();
+    after_getinode = thread_get_total_cycles(th) / cycles_per_us;
+    log_info("inodeCache MISS, read from disk! [get_inode(%d)] duration: %lu us, actual time: %lu", inum, (after_getinode_tsc - before_getinode_tsc) / cycles_per_us, (after_getinode - before_getinode));
     return inode_ptr;
 }
 

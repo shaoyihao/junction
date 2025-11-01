@@ -10,6 +10,10 @@ void read_inode(int idx, DInode *ino)    // 将盘上第 idx 个 inode 的数据
     	exit(1);
 	}
 
+	uint64_t before_readinode_tsc = rdtsc();
+	thread_t *th = thread_self();
+	uint64_t before_readinode = thread_get_total_cycles(th) / cycles_per_us;
+
 	BlockID blockidx = sb.itable_blockstart + idx / INODENUM_PER_BLOCK;
 	int idx2 = idx % INODENUM_PER_BLOCK;
 
@@ -18,6 +22,10 @@ void read_inode(int idx, DInode *ino)    // 将盘上第 idx 个 inode 的数据
     DInode* inode_tbl = reinterpret_cast<DInode*>(data);
 	*ino = inode_tbl[idx2];
 	tmp_block_pool->free_block(data);
+
+	uint64_t after_readinode_tsc = rdtsc();
+	uint64_t after_readinode = thread_get_total_cycles(th) / cycles_per_us;
+	log_info("[read_inode(%d)] duration: %lu us, actual time: %lu us", idx, (after_readinode_tsc - before_readinode_tsc) / cycles_per_us, after_readinode - before_readinode);
 }
 void write_inode(int idx, DInode *ino)    // 将 ino 的数据写到盘上第 idx 个 inode 中
 {
@@ -27,6 +35,7 @@ void write_inode(int idx, DInode *ino)    // 将 ino 的数据写到盘上第 id
     	exit(1);
 	}
 
+	uint64_t before_writeinode = rdtsc();
 	u_int64_t blockidx = sb.itable_blockstart + idx / INODENUM_PER_BLOCK;
     int idx2 = idx % INODENUM_PER_BLOCK;
 	
@@ -42,4 +51,6 @@ void write_inode(int idx, DInode *ino)    // 将 ino 的数据写到盘上第 id
 	inode_tbl[idx2] = *ino;
 	write_block(blockidx, data);
 	tmp_block_pool->free_block(data);
+	uint64_t after_writeinode = rdtsc();
+	log_info("[write_inode(%d)] duration: %lu us", idx, (after_writeinode - before_writeinode) / cycles_per_us);
 }

@@ -231,6 +231,7 @@ void Process::FinishExec(std::shared_ptr<MemoryMap> &&new_mm) {
 
 bool Process::ThreadFinish(Thread *th) {
   rt::SpinGuard g(child_thread_lock_);
+  log_info("[Process::ThreadFinish()] total time: %lu us", th->GetRuntime().Microseconds());
   accumulated_runtime_ += th->GetRuntime();
   thread_map_.erase(th->get_tid());
   size_t remaining_threads = thread_map_.size();

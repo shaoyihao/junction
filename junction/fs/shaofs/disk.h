@@ -10,7 +10,7 @@
 
 
 typedef struct {
-	uint32_t       magic_number;                 // FSMAGIC=0x0517
+	uint32_t       magic_number;                 // FSMAGIC=0x0517junction/fs/shaofs
 	uint32_t       block_size;                   // 每块（LBA）的大小（B）
     uint64_t       total_blocknum;               // 总块数
 	int            inode_size;                   // inode 大小
