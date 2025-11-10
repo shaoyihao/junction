@@ -67,8 +67,9 @@ typedef struct {
 } DInode;     // disk inode
 
 extern "C" {
-    void readObj(void* obj, size_t siz, uint64_t lba_start, uint32_t lba_count);
-    void writeObj(void* obj, size_t siz, uint64_t lba_start, uint32_t lba_count);
+	#include "runtime/storage.h"
+    // void readObj(void* obj, size_t siz, uint64_t lba_start, uint32_t lba_count);
+    // void writeObj(void* obj, size_t siz, uint64_t lba_start, uint32_t lba_count);
 }
 
 void read_sb();

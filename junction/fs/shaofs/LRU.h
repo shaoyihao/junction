@@ -6,7 +6,7 @@
 #include <functional>
 #include "base.h"
 
-#define DEFAULT_CACHE_SIZE  8192
+#define DEFAULT_CACHE_SIZE  65536
 
 template <typename ID, typename Entry>
 class LRU
@@ -14,12 +14,13 @@ class LRU
 public:
     explicit LRU(size_t capacity) : lru_capacity(capacity)   // capacity 必须大于 0
     {
-        mutex_.locked = 0;  // 初始化 spinlock
+        if (capacity <= 0) throw std::invalid_argument("LRU cache capacity must be greater than 0");
+        spin_lock_init(&mutex_);
     }
 
     void set_eviction_callback(std::function<void(const ID&, Entry)> cb)   // 设置淘汰回调（可选）
     {
-        // 因为只在初始化时才执行一次，因此就不必上锁了
+        SpinGuard g(&mutex_);        // 因为只在初始化时才执行一次，因此其实可以不上锁
         on_evict = std::move(cb);     
     }
 
@@ -77,10 +78,7 @@ public:
         }
         
         // 将 on_evict 函数放在锁外进行
-        if (need_evict)
-        {
-            on_evict(victim_key, std::move(victim_data));
-        }
+        if (need_evict) on_evict(victim_key, std::move(victim_data));
     }
 
     bool erase(const ID& key)     // 手动删除 cache 中的某个元素（该数据已是无效数据，不写回）
@@ -141,7 +139,6 @@ private:
     mutable spinlock_t mutex_;
     size_t lru_capacity;
 };
-
 
 template <typename Key, typename Entry>
 class LRUSingleton 

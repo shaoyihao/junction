@@ -1,14 +1,13 @@
 #pragma once
 
 #include "base.h"
-#include "LRU.h"
+#include "LRUptr.h"
 #include "inode.h"
 
-using InodeCacheManager  = LRUSingleton<int, MInode*>;
+using InodeCacheManager = ShardedLRUPtrSingleton<int, MInode>;
 
 
-int alloc_inode(file_type_t type, MInode*& inode);
-void free_inum(int inum);
+int alloc_inode(file_type_t type, MInode*& inode, int inum = -1);
 
 void init_inode_cache(size_t capacity = DEFAULT_CACHE_SIZE);
 MInode* get_inode(int inum);

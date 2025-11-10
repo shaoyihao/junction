@@ -7,29 +7,89 @@
 #include <cstring>
 #include <string>
 
+void split_path(const char *pathname, std::vector<std::string>& parts)
+{
+    if (!pathname) return;
+
+    const char* start = pathname;
+    const char* end   = pathname;
+    
+    while (1)
+    {
+        while (*start == '/') start++;
+        if (*start == '\0') break;
+        end = start;
+        while (*end && *end != '/') end++;
+        parts.emplace_back(start, end - start);
+        if (*end == '\0') break;
+        start = end;
+    }
+}
+
+int dir_lookup_locked(MInode* dir_inode, const char *name)    // 在 dir_inode 中查找 name 对应的 inum，若不存在则返回 -1
+{
+    if (dir_inode->disk_inode.type != DIRECTORY)
+    {
+        log_info("not a DIRECTORY");
+        return -1;
+    }
+
+    // thread_t *th = thread_self();
+    // uint64_t before_dirlookup = thread_get_total_cycles(th) / cycles_per_us;
+
+    char* raw_buffer = new char[dir_inode->disk_inode.file_size];
+    Dirent* entries = reinterpret_cast<Dirent*>(raw_buffer);
+    if (!entries)
+    {
+        log_info("[dir_lookup(%d, %s)->new(%lu)] ERROR: fail to new", dir_inode->inum, name, dir_inode->disk_inode.file_size);
+        return -1;
+    }
+
+    read_full_file(dir_inode, entries);      // 好像多了一步从 cache 复制到 buffer 的操作
+
+    int entry_count = dir_inode->disk_inode.file_size / sizeof(Dirent), res = -1;
+    for (int i = 0; i < entry_count; i++)
+        if (strcmp(entries[i].name, name) == 0)
+        {
+            res = entries[i].inum;
+            break;
+        }
+
+    delete[] raw_buffer;
+
+    // uint64_t after_dirlookup = thread_get_total_cycles(th) / cycles_per_us;
+    // log_info("dirlookup actual time: %lu us", after_dirlookup - before_dirlookup);
+    
+    return res;
+}
+int dir_lookup(MInode* dir_inode, const char *name)
+{
+    SpinGuard g(&dir_inode->lock);
+    return dir_lookup_locked(dir_inode, name);
+}
+
+void add_dentry_locked(MInode* dir_inode, const char* name, int inum, file_type_t filetype)  // inum 的 hardlink 应当另行 +1
+{
+    Dirent new_ent = {.inum=inum, .filetype=filetype};
+    strncpy(new_ent.name, name, NAMESIZ - 1);
+    new_ent.name[NAMESIZ - 1] = '\0';
+    append_content(dir_inode, &new_ent, sizeof(Dirent));
+    dir_inode->dirty = true;
+}
+void add_dentry(MInode* dir_inode, const char* name, int inum, file_type_t filetype)   
+{
+    SpinGuard g(&dir_inode->lock);
+    add_dentry_locked(dir_inode, name, inum, filetype);
+}
 
 void lookup(const char *pathname, IEntry& res)
 {
-    log_info("[lookup(%s)] START", pathname);
+    // log_info("[lookup(%s)] START", pathname);
     
     auto& dentrycache = DentryCacheManager::instance();
 
-    thread_t *th = thread_self();
-    uint64_t before_split = thread_get_total_cycles(th) / cycles_per_us;
-    
-    char* path_copy = new char[MAX_PATH_LEN];
-    strncpy(path_copy, pathname, MAX_PATH_LEN);
-    path_copy[MAX_PATH_LEN - 1] = '\0';
-
-    std::vector<std::string> parts;    // 对 pathname 进行拆分
-    char* saveptr;
-    char* token = strtok_r(path_copy, "/", &saveptr);
-    while (token) 
-    { 
-        parts.push_back(token); 
-        token = strtok_r(NULL, "/", &saveptr); 
-    }
-    delete[] path_copy;
+    std::vector<std::string> parts;
+    split_path(pathname, parts);
 
     int prefix_hit_index;  // 表示命中到哪一层（parts.size() 表示完整路径，0 表示 "/"）
     int base_inode;
@@ -44,70 +104,18 @@ void lookup(const char *pathname, IEntry& res)
         }
     } // 至少会命中到 “/”，此时 base_inode=0，prefix_hit_index=0
 
-    uint64_t after_split = thread_get_total_cycles(th) / cycles_per_us;
-    log_info("[split_path] actual time: %lu us", after_split - before_split);
-
     // 基于 base_inode 搜索完整路径对应的 Inode
     MInode* current_inode = get_inode(base_inode), *last_inode = nullptr;
-    if (!current_inode) 
-    {
-        log_info("[lookup] ERROR: get_inode(%d) returned null!", base_inode);
-        res.code = -1; // 设置错误码
-        return;        // 立即返回
-    }
 
     for (int i = prefix_hit_index; i < parts.size(); i++)    // 在 dentries 中搜索 parts[i]
     {
         // log_info("[lookup(%s)] looking for part '%s'", pathname, parts[i].c_str());
 
-        if (current_inode->disk_inode.type != DIRECTORY) 
+        int target_inum = dir_lookup(current_inode, parts[i].c_str());
+        if (target_inum == -1)  // 该目录下不存在 parts[i]
         {
-            log_info("not a DIRECTORY");
-            release_inode(last_inode);
-            release_inode(current_inode);
-            res.code = -1;
-            res.parent_ino = nullptr;
-            res.ino = nullptr;
-            return;
-        }
+            log_info("not found in dir %d", current_inode->inum);
 
-        bool found = false;
-        int target_inum;
-
-        {
-            // log_info("try to get inode[%d]'s lock", current_inode->inum);
-            // SpinGuard g(&current_inode->lock);
-            // log_info("get inode[%d]'s lock", current_inode->inum);
-
-            char* raw_buffer = new char[current_inode->disk_inode.file_size];
-            Dirent* entries = reinterpret_cast<Dirent*>(raw_buffer);
-
-            // log_info("gonna smalloc");
-            // Dirent* entries = (Dirent*)smalloc(current_inode->disk_inode.file_size);  // 一次性读取整个文件内容，是否会有问题？考虑进行优化
-            // log_info("ret from smalloc");
-            if (!entries)
-            {
-                log_info("[lookup(%s)->new(%lu)] ERROR: fail to new", pathname, current_inode->disk_inode.file_size);
-
-            }
-            read_full_file(current_inode, entries);
-            // log_info("read full content of inode %d", current_inode->inum);
-
-            int entry_count = current_inode->disk_inode.file_size / sizeof(Dirent);
-            for (int j = 0; j < entry_count; ++j) 
-                if (strcmp(entries[j].name, parts[i].c_str()) == 0) 
-                {
-                    target_inum = entries[j].inum;
-                    found = true;
-                    log_info("found the dentry");
-                    break;
-                }
-            // sfree(entries);
-            delete[] raw_buffer;
-        }
-
-        if (found == false)   // 该目录下不存在 parts[i]
-        {
             if (i == parts.size() - 1)  // 仅是最后一个token不匹配（可能是新建文件）
             {
                 release_inode(last_inode);
@@ -122,7 +130,7 @@ void lookup(const char *pathname, IEntry& res)
                 release_inode(current_inode);
                 res.code = -1;
                 res.parent_ino = nullptr;
-                res.ino = nullptr;
+                res.ino = nullptr; 
             }
             return;
         }
@@ -132,12 +140,7 @@ void lookup(const char *pathname, IEntry& res)
         last_inode = current_inode;
         // uint64_t before_get_inode = rdtsc();
         current_inode = get_inode(target_inum);
-        if (!current_inode) 
-        {
-            log_info("[lookup] ERROR: get_inode(%d) returned null!", target_inum);
-            res.code = -1; 
-            return;        
-        }
+
         // uint64_t after_get_inode = rdtsc();
         // log_info("[get_inode] duration: %lu us", (after_get_inode - before_get_inode) / cycles_per_us);
 

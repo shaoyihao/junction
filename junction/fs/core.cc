@@ -517,11 +517,8 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
   {
     int64_t before_open = mythread().GetRuntime().Microseconds();
     uint64_t before_open_tsc = rdtsc();
-    log_info("[openat() START] current time: %ld us", before_open);
 
-    char* realpath = new char[MAX_PATH_LEN];
-    strncpy(realpath, pathname + MYPREFIX_LEN, MAX_PATH_LEN - 1);  // 去除前缀，取出实际路径
-    realpath[MAX_PATH_LEN - 1] = '\0';
+    const char* realpath = pathname + MYPREFIX_LEN;  // 去除前缀，取出实际路径
 
     IEntry* ent = new IEntry;
     if (!ent)
@@ -532,10 +529,10 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
 
     if (realpath[0] == '/')   // 绝对路径
     {
-      int64_t before_lookup = mythread().GetRuntime().Microseconds();
+      // int64_t before_lookup = mythread().GetRuntime().Microseconds();
       lookup(realpath, *ent);  // 解析该路径
-      int64_t after_lookup = mythread().GetRuntime().Microseconds();
-      log_info("[lookup()] acutual time: %ld", after_lookup - before_lookup);
+      // int64_t after_lookup = mythread().GetRuntime().Microseconds();
+      // log_info("[lookup()] acutual time: %ld", after_lookup - before_lookup);
 
 
       int inum;
@@ -543,7 +540,7 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
       {
         if (flags & kFlagCreate)   // 新建文件
         {
-          log_info("creating new file: %s", ent->last_name);
+          // log_info("creating new file: %s", ent->last_name);
           int64_t before_create = mythread().GetRuntime().Microseconds();
           MInode* newinode = create_file(ent->parent_ino, ent->last_name, REGULAR);
           int64_t after_create = mythread().GetRuntime().Microseconds();
@@ -551,7 +548,7 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
 
           inum = newinode->inum;
           release_inode(ent->parent_ino);
-          // release_inode(newinode);   // 这个 ref 应当在 close() 中再释放
+          release_inode(newinode);  // 这个 ref 应当在 close() 中再释放？
 
           auto& dentrycache = DentryCacheManager::instance();
           dentrycache.put(realpath, inum);
@@ -560,7 +557,6 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
         {
           log_info("[usys_openat] ERROR: illegal pathname %s", realpath);
           release_inode(ent->parent_ino);
-          delete[] realpath;
           delete ent;
           return -1;
         }
@@ -568,7 +564,6 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
       else if (ent->code == -1)   // 路径错误
       {
         log_info("[usys_openat] ERROR: illegal pathname %s", realpath);
-        delete[] realpath;
         delete ent;
         return -1;
       }
@@ -577,9 +572,7 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
         // log_info("this file alreadly exists!");
         inum = ent->ino->inum;
         release_inode(ent->parent_ino);
-        // release_inode(ent.ino);    // 这个 ref 应当在 close() 中再释放
-
-        delete[] realpath;
+        release_inode(ent->ino);    // 这个 ref 应当在 close() 中再释放？
         delete ent;
       }
 
@@ -593,7 +586,7 @@ long usys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
 
       int64_t after_open = mythread().GetRuntime().Microseconds();
       uint64_t after_open_tsc = rdtsc();
-      log_info("[open()] total time: %lu us, actual time: %lu us", (after_open_tsc - before_open_tsc) / cycles_per_us, after_open - before_open);
+      log_info("[open()] start at %lu us,  total time: %lu us, actual time: %lu us", before_open, (after_open_tsc - before_open_tsc) / cycles_per_us, after_open - before_open);
     
 
       Status<std::shared_ptr<File>> f = std::make_shared<File>(FileType::kNormal, opflag, fmode, myinode);

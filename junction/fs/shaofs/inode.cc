@@ -2,6 +2,21 @@
 #include "blockCache.h"
 #include "blockpool.h"
 
+int alloc_inum()
+{
+	for (int idx = 0; idx < INODENUM; idx++)
+		if (!bitmap_atomic_test_and_set(imap, idx)) return idx;
+	
+	log_info("[ERROR] alloc_inum(): No free inode!");
+	return -1;
+}
+void free_inum(int inum)    // 释放 inode，好像很少有场景需要 free，除非是删除文件
+{
+    if (inum < 0 || inum >= INODENUM) return;
+    bitmap_atomic_clear(imap, inum);
+}
+
+
 void read_inode(int idx, DInode *ino)    // 将盘上第 idx 个 inode 的数据写到 ino 中（空间需提前申请）
 {
 	if (idx < 0 || idx >= sb.inode_num) 
@@ -35,7 +50,7 @@ void write_inode(int idx, DInode *ino)    // 将 ino 的数据写到盘上第 id
     	exit(1);
 	}
 
-	uint64_t before_writeinode = rdtsc();
+	// uint64_t before_writeinode = rdtsc();
 	u_int64_t blockidx = sb.itable_blockstart + idx / INODENUM_PER_BLOCK;
     int idx2 = idx % INODENUM_PER_BLOCK;
 	
@@ -51,6 +66,6 @@ void write_inode(int idx, DInode *ino)    // 将 ino 的数据写到盘上第 id
 	inode_tbl[idx2] = *ino;
 	write_block(blockidx, data);
 	tmp_block_pool->free_block(data);
-	uint64_t after_writeinode = rdtsc();
-	log_info("[write_inode(%d)] duration: %lu us", idx, (after_writeinode - before_writeinode) / cycles_per_us);
+	// uint64_t after_writeinode = rdtsc();
+	// log_info("[write_inode(%d)] duration: %lu us", idx, (after_writeinode - before_writeinode) / cycles_per_us);
 }

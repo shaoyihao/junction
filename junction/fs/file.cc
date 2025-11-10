@@ -217,13 +217,12 @@ ssize_t usys_read(int fd, char *buf, size_t len) {
   {
     int64_t before_read = mythread().GetRuntime().Microseconds();
     uint64_t before_read_tsc = rdtsc();
-    log_info("[read() START] current time: %lu us", before_read);
+    // log_info("[read() START] current time: %lu us", before_read);
 
     int inum = f->get_inode()->get_inum();
 
     auto& cache = InodeCacheManager::instance();
-    MInode* inode_ptr;
-    cache.get(inum, inode_ptr);
+    MInode* inode_ptr = cache.get_or_create(inum);
     // std::shared_ptr<MInode> inode_ptr = get_inode(inum);
 
     // log_info("inode num: %d", inode_ptr->inum);
@@ -284,7 +283,7 @@ ssize_t usys_write(int fd, const char *buf, size_t len) {
   {
     int64_t before_write = mythread().GetRuntime().Microseconds();
     uint64_t before_write_tsc = rdtsc();
-    log_info("[write() START] current time: %lu us", before_write);
+    // log_info("[write() START] current time: %lu us", before_write);
 
     int inum = f->get_inode()->get_inum();
     // log_info("WRITE | fd:%d, inodenum: %d", fd, inum);
@@ -614,8 +613,7 @@ long usys_close(int fd) {
     // std::shared_ptr<MInode> inode_ptr = get_inode(inum);
 
     auto& cache = InodeCacheManager::instance(); 
-    MInode* inode_ptr;
-    cache.get(inum, inode_ptr);         // 理论上应该是包命中的（避免增加 refcount）
+    MInode* inode_ptr = cache.get_or_create(inum);  // 理论上应该是包命中的（避免增加 refcount）
 
     // log_info("inode_ptr->disk_inode.idx: %d", inode_ptr->disk_inode.idx);
     release_inode(inode_ptr);

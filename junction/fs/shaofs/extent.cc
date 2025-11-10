@@ -9,7 +9,7 @@ extern "C" {
 #include "../runtime/defs.h"
 }
 
-void load_all_extents(DInode &di, std::vector<iExtent, MyAllocator<iExtent>> &out)   // 将该 inode 拥有的 iextent 都读取出来（应该是已经“规范化”了，有序+无法再合并）
+void load_all_extents(DInode &di, std::vector<iExtent> &out)   // 将该 inode 拥有的 iextent 都读取出来（应该是已经“规范化”了，有序+无法再合并）
 {
     // log_info("load_all_extents() START");
 
@@ -22,7 +22,7 @@ void load_all_extents(DInode &di, std::vector<iExtent, MyAllocator<iExtent>> &ou
     }
 	
 	const size_t cap = BLOCK_SIZE / sizeof(iExtent);
-	std::vector<iExtent, MyAllocator<iExtent>> buf(cap);
+	std::vector<iExtent> buf(cap);
 	read_block(di.indirect_extent_block, buf.data());
 	for (int i = 0; i < cap; i++)
 	{
@@ -32,14 +32,14 @@ void load_all_extents(DInode &di, std::vector<iExtent, MyAllocator<iExtent>> &ou
 
     // log_info("load_all_extents() OVER");
 }
-void normalize_extent(std::vector<iExtent, MyAllocator<iExtent>> &exts) 
+void normalize_extent(std::vector<iExtent> &exts) 
 {
     if (exts.empty()) return;
 
     std::sort(exts.begin(), exts.end(), [](auto &a, auto &b){ return a.logical_start < b.logical_start; });
     exts.erase(std::remove_if(exts.begin(), exts.end(), [](const iExtent &e) { return e.block_count == 0; }), exts.end());
 
-    std::vector<iExtent, MyAllocator<iExtent>> v;
+    std::vector<iExtent> v;
     v.reserve(exts.size());
     v.push_back(exts[0]);
     for (int i = 1; i < exts.size(); i++) 
@@ -53,7 +53,7 @@ void normalize_extent(std::vector<iExtent, MyAllocator<iExtent>> &exts)
     }
     exts.swap(v);
 }
-void store_all_extents(DInode &di, std::vector<iExtent, MyAllocator<iExtent>> &exts)
+void store_all_extents(DInode &di, std::vector<iExtent> &exts)
 {
     // log_info("store_all_extents() START");
 
@@ -68,7 +68,7 @@ void store_all_extents(DInode &di, std::vector<iExtent, MyAllocator<iExtent>> &e
 	if (remain == 0) return;
 
 	const size_t cap = BLOCK_SIZE / sizeof(iExtent);
-    std::vector<iExtent, MyAllocator<iExtent>> buf(cap);
+    std::vector<iExtent> buf(cap);
     size_t to_copy = MIN(remain, cap);
 	for (int i = 0; i < to_copy; i++) buf[i] = exts[nd + i];
 	if (to_copy < cap) buf[to_copy] = iExtent{0, 0, 0};    // 结束标记
@@ -170,7 +170,7 @@ static uint64_t alloc_oneextent_from_group(int gid, uint64_t cnt, Extent &res)  
 
 
 // 在同一 group 内，尽量用若干个 extent 累加到 cnt 块；返回实际分到的块数。
-static uint64_t alloc_extents_from_group(int gid, uint64_t cnt, std::vector<Extent, MyAllocator<Extent>> &res)  // 考虑使用 buddy system 进行优化
+static uint64_t alloc_extents_from_group(int gid, uint64_t cnt, std::vector<Extent> &res)  // 考虑使用 buddy system 进行优化
 {
     if (cnt == 0 || gid == -1) return 0;
 
@@ -231,7 +231,7 @@ static uint64_t alloc_extents_from_group(int gid, uint64_t cnt, std::vector<Exte
     return taken;
 }
 
-bool alloc_extents(uint64_t lba_count, std::vector<Extent, MyAllocator<Extent>> &res)    
+bool alloc_extents(uint64_t lba_count, std::vector<Extent> &res)    
 {
     if (lba_count == 0) return true;
     res.clear();
@@ -291,7 +291,7 @@ void free_oneextent(iExtent &e, uint64_t startblk)  // free_oneextent(e, 0) 即�
 }
 
 
-void read_extentS(const std::vector<iExtent, MyAllocator<iExtent>> &exts, uint64_t off, void* buf, uint64_t len)
+void read_extentS(const std::vector<iExtent> &exts, uint64_t off, void* buf, uint64_t len)
 {
     // log_info("read_extentS() START");
 
@@ -315,7 +315,7 @@ void read_extentS(const std::vector<iExtent, MyAllocator<iExtent>> &exts, uint64
     // log_info("read_extentS() OVER");
 }
 
-void write_extentS(const std::vector<iExtent, MyAllocator<iExtent>> &exts, uint64_t off, const char* buf, uint64_t len)
+void write_extentS(const std::vector<iExtent> &exts, uint64_t off, const char* buf, uint64_t len)
 {
     // log_info("write_extentS() START");
 
@@ -340,7 +340,7 @@ void write_extentS(const std::vector<iExtent, MyAllocator<iExtent>> &exts, uint6
     // log_info("write_extentS() OVER");
 }
 
-void ensure_coverage(std::vector<iExtent, MyAllocator<iExtent>> &exts, uint64_t end)   // 确保 [0, end) 逻辑块区间被 extents 覆盖；若有缺口则分配并填充  （exts中的各extent在逻辑上应当是连续的）
+void ensure_coverage(std::vector<iExtent> &exts, uint64_t end)   // 确保 [0, end) 逻辑块区间被 extents 覆盖；若有缺口则分配并填充  （exts中的各extent在逻辑上应当是连续的）
 {
     // log_info("ensure_coverage() START");
 
@@ -354,7 +354,7 @@ void ensure_coverage(std::vector<iExtent, MyAllocator<iExtent>> &exts, uint64_t 
 
     // 存在缺口 [start, end)
     uint64_t need = end - start;
-    std::vector<Extent, MyAllocator<Extent>> new_extents;
+    std::vector<Extent> new_extents;
     if (!alloc_extents(need, new_extents))
     {
         log_info("ERROR: fail to alloc extents in ensure_coverage()");

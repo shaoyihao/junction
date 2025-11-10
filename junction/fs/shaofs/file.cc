@@ -15,7 +15,8 @@ void write_file(MInode* ino, uint64_t oft, char* buf, uint64_t size)   // 从 of
 
 	uint64_t before_read_extents = rdtsc();
 	DInode &di = ino->disk_inode;
-	std::vector<iExtent, MyAllocator<iExtent>> exts;
+	// std::vector<iExtent, MyAllocator<iExtent>> exts;
+	std::vector<iExtent> exts;
 	load_all_extents(di, exts);
 	ensure_coverage(exts, CEIL(oft + size, BLOCK_SIZE));
 	uint64_t after_read_extents = rdtsc();
@@ -42,9 +43,6 @@ void write_file(MInode* ino, uint64_t oft, char* buf, uint64_t size)   // 从 of
     store_all_extents(di, exts);
 	// uint64_t after_store_extents = rdtsc();
 	// log_info("[store_all_extents] duration: %lu us", (after_store_extents - before_store_extents) / cycles_per_us);
-	
-	auto &cache = InodeCacheManager::instance();
-	cache.put(ino->inum, ino); 
 
 	// log_info("write_file() OVER");
 }
@@ -61,7 +59,7 @@ void read_file(MInode* inode, uint64_t oft, void* buf, uint64_t size)  // 从 of
 
 	// log_info("Reading file[%d] content[%lu ~ %lu) ...", inode->inum, oft, oft + size);
 
-	std::vector<iExtent, MyAllocator<iExtent>> exts;
+	std::vector<iExtent> exts;
 	load_all_extents(di, exts);
 
 	read_extentS(exts, oft, buf, size);
@@ -71,18 +69,18 @@ void read_file(MInode* inode, uint64_t oft, void* buf, uint64_t size)  // 从 of
 
 void read_full_file(MInode* inode, void* buf)
 {
-	uint64_t before_readfullfile_tsc = rdtsc();
-	thread_t *th = thread_self();
-	uint64_t before_readfullfile = thread_get_total_cycles(th) / cycles_per_us;
+	// uint64_t before_readfullfile_tsc = rdtsc();
+	// thread_t *th = thread_self();
+	// uint64_t before_readfullfile = thread_get_total_cycles(th) / cycles_per_us;
 	// log_info("read_full_file() START");
 
 	if (inode == nullptr || buf == nullptr) return;
 	read_file(inode, 0, buf, inode->disk_inode.file_size);
 
 	// log_info("read_full_file() OVER");
-	uint64_t after_readfullfile_tsc = rdtsc();
-	uint64_t after_readfullfile = thread_get_total_cycles(th) / cycles_per_us;
-    log_info("[readfullfile(%d)] duration: %lu us, actual time: %lu", inode->inum, (after_readfullfile_tsc - before_readfullfile_tsc) / cycles_per_us, after_readfullfile - before_readfullfile);
+	// uint64_t after_readfullfile_tsc = rdtsc();
+	// uint64_t after_readfullfile = thread_get_total_cycles(th) / cycles_per_us;
+    // log_info("[readfullfile(%d)] duration: %lu us, actual time: %lu", inode->inum, (after_readfullfile_tsc - before_readfullfile_tsc) / cycles_per_us, after_readfullfile - before_readfullfile);
 }
 
 
@@ -246,50 +244,44 @@ void append_content(MInode* inode, const void *data, size_t siz)  // 将数据�
 
 MInode* create_file(MInode* dirino, const char* filename, file_type_t filetype)   // 在目录 ino 下创建一个新文件，返回新创建的 inode
 {
-	SpinGuard g(&dirino->lock);  // 锁住目录 inode，因为当前线程需要修改该 inode 的内容
-
-	if (!dirino || dirino->disk_inode.type != DIRECTORY)
+	if (!dirino) 
 	{
-		log_info("Error: inode is not a directory.");
+		log_info("Error: dirino is null.");
 		return nullptr;
 	}
 
-	// Dirent* entries = (Dirent*)smalloc(dirino->disk_inode.file_size);
-	char* raw_buffer = new char[dirino->disk_inode.file_size];
-    Dirent* entries = reinterpret_cast<Dirent*>(raw_buffer);
-	read_full_file(dirino, entries);
-	// log_info("read file[%d] content OVER", dirino->inum);
+	int inum = -1;
+	
+	{
+		SpinGuard g(&dirino->lock);
 
-	int entry_count = dirino->disk_inode.file_size / sizeof(Dirent);
-	for (int i = 0; i < entry_count; i++)
-		if (strcmp(entries[i].name, filename) == 0)
+		if (dirino->disk_inode.type != DIRECTORY)
 		{
-			log_info("Error: '%s' already exists.\n", filename);
-			// sfree(entries);
-			delete[] raw_buffer;
+			log_info("Error: inode is not a directory.");
 			return nullptr;
 		}
-	// sfree(entries);
-	delete[] raw_buffer;
+
+		int target_inum = dir_lookup_locked(dirino, filename);
+		if (target_inum != -1)
+		{
+			log_info("Error: '%s' already exists.", filename);
+			return nullptr;
+		}
+
+		inum = alloc_inum();
+		if (inum == -1)
+		{
+			log_info("Error: failed to allocate inode.");
+			return nullptr;
+		}
+
+		add_dentry_locked(dirino, filename, inum, filetype);
+	}
 
 	MInode* inode;
-	int inum = alloc_inode(filetype, inode);     // 分配（并初始化）一个 inode
-	if (inum == -1) 
-	{
-		log_info("Error: failed to allocate inode.");
-		return nullptr;
-	}
-	// else log_info("alloc a new inode: %d", inum);
+	alloc_inode(filetype, inode, inum);     // 分配（并初始化）一个 inode
 
-	// 添加目录项
-	Dirent new_ent = {.inum=inum, .filetype=inode->disk_inode.type};
-	strncpy(new_ent.name, filename, NAMESIZ - 1);
-	new_ent.name[NAMESIZ - 1] = '\0';
-	append_content(dirino, &new_ent, sizeof(Dirent));
-
-	// flush_inode(inode);
-
-  	// log_info("successfully created a file!");
+  	log_info("successfully created a file!");
   	return inode;
 }
 
@@ -301,7 +293,7 @@ void truncate_inode_data_locked(MInode*& inode, uint64_t start_offset)   // 释�
 	if (start_offset >= inode->disk_inode.file_size) return;
 
 	DInode &di = inode->disk_inode;
-	std::vector<iExtent, MyAllocator<iExtent>> exts;
+	std::vector<iExtent> exts;
 	load_all_extents(di, exts);
 	// log_info("extent num: %d", exts.size());
 
