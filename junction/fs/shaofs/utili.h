@@ -35,23 +35,23 @@ struct SpinGuard
 };
 
 
-template <typename T>
-struct MyAllocator {
-    using value_type = T;
-    MyAllocator() = default;
-    template <typename U> constexpr MyAllocator(const MyAllocator<U>&) noexcept {}
+// template <typename T>
+// struct MyAllocator {
+//     using value_type = T;
+//     MyAllocator() = default;
+//     template <typename U> constexpr MyAllocator(const MyAllocator<U>&) noexcept {}
 
-    [[nodiscard]] T* allocate(std::size_t n) 
-    {   
-        const std::size_t total_size = n * sizeof(T);
-        void* p = smalloc(total_size);
-        return static_cast<T*>(p);
-    }
-    void deallocate(T* p, std::size_t n) noexcept 
-    {
-        sfree(p);
-    }
+//     [[nodiscard]] T* allocate(std::size_t n) 
+//     {   
+//         const std::size_t total_size = n * sizeof(T);
+//         void* p = smalloc(total_size);
+//         return static_cast<T*>(p);
+//     }
+//     void deallocate(T* p, std::size_t n) noexcept 
+//     {
+//         sfree(p);
+//     }
 
-    template <class U> bool operator==(const MyAllocator<U>&) const { return true;  }
-    template <class U> bool operator!=(const MyAllocator<U>&) const { return false; }
-};
+//     template <class U> bool operator==(const MyAllocator<U>&) const { return true;  }
+//     template <class U> bool operator!=(const MyAllocator<U>&) const { return false; }
+// };

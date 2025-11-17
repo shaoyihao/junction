@@ -621,7 +621,7 @@ long usys_close(int fd) {
     // test_write_disk();
     // test_read_disk();
 
-    final_flush();
+    // final_flush();
 
     int64_t after_close = mythread().GetRuntime().Microseconds();
     uint64_t after_close_tsc = rdtsc();

@@ -35,6 +35,8 @@ extern "C" {
 #include "junction/syscall/strace.h"
 #include "junction/syscall/syscall.h"
 
+#include "junction/fs/shaofs/file.h"     // final_flush()
+
 namespace junction {
 
 inline constexpr uint64_t kThreadRequiredFlags =
@@ -573,6 +575,9 @@ long usys_clone(unsigned long clone_flags, unsigned long newsp,
 }
 
 [[noreturn]] void usys_exit(int status) {
+  
+  final_flush();
+
   Thread *tptr = &mythread();
   tptr->set_xstate(status);
   rt::Preempt::Lock();

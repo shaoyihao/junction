@@ -81,7 +81,7 @@ uint64_t extent_size(const iExtent* ext) { return ext->block_count * BLOCK_SIZE;
 //     // readObj(buf, size, ext->physical_start, ext->block_count);
 // }
 
-void whattoread(uint64_t current_idx, uint64_t start_block_idx, uint64_t end_block_idx, uint64_t offset, size_t size, size_t& block_offset, size_t& block_size)
+void whattoread(uint64_t current_idx, uint64_t start_block_idx, uint64_t end_block_idx, uint64_t offset, size_t size, size_t& block_offset, size_t& block_size)  // 本次读写聚焦到单个块上时，要在该块的 offset 处读/写 size 长度的数据
 {
 	block_offset = 0;
 	block_size   = BLOCK_SIZE;
@@ -94,7 +94,7 @@ void whattoread(uint64_t current_idx, uint64_t start_block_idx, uint64_t end_blo
     else if (current_idx == end_block_idx) // 尾块
     {
         size_t tail_size = (offset + size) % BLOCK_SIZE;
-        block_size = tail_size > 0 ? tail_size : BLOCK_SIZE;
+        if (tail_size > 0) block_size = tail_size;
     }
 }
 
@@ -153,38 +153,31 @@ void read_extent(const iExtent *ext, uint64_t offset, char* buf, size_t size)
             }
             // 此时，我们持有了 run 中所有 block 的锁
             
-            size_t run_size_bytes = (size_t)run_length * BLOCK_SIZE;
-            char* run_buffer = new(std::nothrow) char[run_size_bytes]; 
-            if (!run_buffer)   // 错误处理：释放所有锁并中止（或者回退到逐块读取）
+            int rc = read_blocks_from_disk(run_start_lba, run_length, (void**)miss_run_blocks.data());
+            if (rc != 0)
             {
-                log_err("Failed to allocate run buffer for extent read");
+                log_err("[read_extent()] Failed to read blocks from disk");
                 for (BlockEntry* b : miss_run_blocks) spin_unlock(&b->mtx);
-                return; 
+                return;
             }
 
-            readObj(run_buffer, run_size_bytes, run_start_lba, run_length);  // 执行批量磁盘读取 (在 I/O 期间持有所有锁)
-
-            // 填充 cache 并拷贝到用户 buf (我们仍持有锁)
+            // 拷贝到用户 buf (我们仍持有锁)  (无需填充到 cache，因为是直接读到 cache 中的)
             for (uint32_t k = 0; k < run_length; k++)
             {
                 BlockEntry* block_to_fill = miss_run_blocks[k];
                 uint64_t block_idx_in_extent = run_start_idx + k;
 
-                // 填充 cache
-                memcpy(block_to_fill->data, run_buffer + k * BLOCK_SIZE, BLOCK_SIZE);
                 block_to_fill->dirty = false;
                 block_to_fill->valid = true;
 
                 // 拷贝到用户 buf
                 size_t of, sz;
                 whattoread(block_idx_in_extent, start_block_idx, end_block_idx, offset, size, of, sz);
-                memcpy(buf + taken_size, run_buffer + k * BLOCK_SIZE + of, sz);
+                if (sz > 0) memcpy(buf + taken_size, (char*)block_to_fill->data + of, sz);
                 taken_size += sz;
 
                 spin_unlock(&block_to_fill->mtx);
             }
-
-            delete[] run_buffer;
 
             current_idx += run_length;
         } 
@@ -195,62 +188,44 @@ void read_extent(const iExtent *ext, uint64_t offset, char* buf, size_t size)
 
 void write_extent(const iExtent *ext, uint64_t offset, const void *data, size_t size)   // 从该 extent 的 offset（B）处起，写入 size 长度数据
 {
-	size_t total_capacity = extent_size(ext);    // 该 extent 的总容量
-	if (total_capacity < offset + size) 
-	{
-		log_info("not enough space!");
-		return;
-	}
+	if (ext == nullptr || extent_size(ext) < offset + size) 
+    {
+        log_info("[write_extent()] invalid extent");
+        return;
+    }
 
-	char* tmp = tmp_block_pool->alloc_block();
-	size_t taken_size = 0;
+    auto &cache = BlockCacheManager::instance();
+    size_t written = 0;
 
 	uint64_t start_block_idx =  offset             / BLOCK_SIZE;     // 第一个字节所属的块
 	uint64_t end_block_idx   = (offset + size - 1) / BLOCK_SIZE;     // 最后一个字节所属的块
 	for (size_t i = start_block_idx; i <= end_block_idx; i++)
 	{
-		size_t block_offset = 0, block_size = BLOCK_SIZE;
+        uint64_t lba = ext->physical_start + i;
+        BlockEntry* block = cache.get_or_create(lba);
 
-		if (i == start_block_idx)
-		{
-			read_block(ext->physical_start + i, tmp);
-			block_offset = offset % BLOCK_SIZE;
-			block_size = MIN(BLOCK_SIZE - block_offset, size);   // 考虑到只涉及 1 块的情况
-		}
-		else if (i == end_block_idx)
-		{
-			read_block(ext->physical_start + i, tmp);
-			size_t tail_size = (offset + size) % BLOCK_SIZE;
-			if (tail_size > 0) block_size = tail_size;
-		}
+        size_t of = 0, sz = BLOCK_SIZE;
+		whattoread(i, start_block_idx, end_block_idx, offset, size, of, sz);
 
+        bool is_partial = !(of == 0 && sz == BLOCK_SIZE);   // 如果是部分写入，则需先读再写
+        if (is_partial) read_block(lba, block);
 
-		if (data == NULL)   // 若 data 为 NULL，则置 0    （考虑用 spdk_nvme_ns_cmd_write_zeroes 来优化）
-		{
-			memset(tmp + block_offset, 0, block_size);
-		}
-		else
-		{
-			memcpy(tmp + block_offset, data + taken_size, block_size);
-		}		
+        {
+            SpinGuard g(&block->mtx);
+            if (data == NULL)   // 若 data 为 NULL，则置 0    （考虑写盘时用 spdk_nvme_ns_cmd_write_zeroes 来优化，如果是写内存cache，好像不行）
+			{
+				memset(block->data + of, 0, sz);
+			}
+			else
+			{
+				memcpy(block->data + of, data + written, sz);
+			}		
+            block->valid = true;
+            block->dirty = true;
+        }
 
-		write_block(ext->physical_start + i, tmp);
-
-		taken_size += block_size;
+        written += sz;
 	}
-
-	tmp_block_pool->free_block(tmp);
-
-	// char *buf = (char*)malloc(total_capacity);
-	// if (buf == NULL) 
-	// {
-	// 	log_info("ERROR malloc");
-	// 	return;
-	// }
-	// readObj(buf, total_capacity, ext->physical_start, ext->block_count);
-	// memcpy(buf + offset, data, size);
-	// writeObj(buf, total_capacity, ext->physical_start, ext->block_count);
-	// free(buf);
 }
 
 

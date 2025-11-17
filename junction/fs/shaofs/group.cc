@@ -59,21 +59,30 @@ bool groupUsable(unsigned int coreid)
 	BlockID bm_start, datablock_start;
 	get_group_by_gid(core_to_group[coreid], &bm_start, &datablock_start);
 
-	// unsigned long bm[BLOCK_SIZE / sizeof(unsigned long)];     // 每次都读一下，会不会有点慢？考虑是否再维护一个 group descriptor 数组
-	size_t bm_size_bytes = BMAPNUM_PERGROUP * BLOCK_SIZE;
-    // unsigned long* bm = (unsigned long*)smalloc(bm_size_bytes);
-	char* raw_buffer = new char[bm_size_bytes];
-    unsigned long* bm = reinterpret_cast<unsigned long*>(raw_buffer);
-    if (!bm) 
-    {
-        log_info("[ERROR] new() failed in alloc_extents_from_group");
-        return 0;
-    }
-	read_block(bm_start, bm);
-	if (bitmap_popcount(bm, DATABLOCKS_PERGROUP) == DATABLOCKS_PERGROUP) return false;
 
-	delete[] raw_buffer;
+	// 因为 BMAPNUM_PERGROUP 一般为 1，所以直接读取一个 block 即可  （不过可能需要将代码写得更通用些，考虑到 BMAPNUM_PERGROUP 可能大于 1 的情况）
+	BlockEntry* block;
+	read_block(bm_start, block);
+	unsigned long* bm = reinterpret_cast<unsigned long*>(block->data);
+	if (bitmap_popcount(bm, DATABLOCKS_PERGROUP) == DATABLOCKS_PERGROUP) return false;
 	return true;
+
+
+	// // unsigned long bm[BLOCK_SIZE / sizeof(unsigned long)];     // 每次都读一下，会不会有点慢？考虑是否再维护一个 group descriptor 数组
+	// size_t bm_size_bytes = BMAPNUM_PERGROUP * BLOCK_SIZE;
+    // // unsigned long* bm = (unsigned long*)smalloc(bm_size_bytes);
+	// char* raw_buffer = new char[bm_size_bytes];
+    // unsigned long* bm = reinterpret_cast<unsigned long*>(raw_buffer);
+    // if (!bm) 
+    // {
+    //     log_info("[ERROR] new() failed in alloc_extents_from_group");
+    //     return 0;
+    // }
+	// read_block(bm_start, bm);
+	// if (bitmap_popcount(bm, DATABLOCKS_PERGROUP) == DATABLOCKS_PERGROUP) return false;
+
+	// delete[] raw_buffer;
+	// return true;
 }
 
 bool set_newgroup(unsigned int coreid)

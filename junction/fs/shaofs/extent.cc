@@ -20,14 +20,15 @@ void load_all_extents(DInode &di, std::vector<iExtent> &out)   // 将该 inode �
         if (e.block_count == 0) break;        // 遇到 iExtent{0,0,0}（结束标记）即退出
         out.push_back(e);
     }
-	
+
+    BlockEntry* block;
+	read_block(di.indirect_extent_block, block);
+	iExtent* exts = reinterpret_cast<iExtent*>(block->data);
 	const size_t cap = BLOCK_SIZE / sizeof(iExtent);
-	std::vector<iExtent> buf(cap);
-	read_block(di.indirect_extent_block, buf.data());
 	for (int i = 0; i < cap; i++)
 	{
-		if (buf[i].block_count == 0) break;   // 遇到 iExtent{0,0,0}（结束标记）即退出
-		out.push_back(buf[i]);
+		if (exts[i].block_count == 0) break;   // 遇到 iExtent{0,0,0}（结束标记）即退出
+		out.push_back(exts[i]);
 	}
 
     // log_info("load_all_extents() OVER");
@@ -67,12 +68,12 @@ void store_all_extents(DInode &di, std::vector<iExtent> &exts)
 	int remain = (n > nd) ? (n - nd) : 0;
 	if (remain == 0) return;
 
-	const size_t cap = BLOCK_SIZE / sizeof(iExtent);
+	const size_t cap = CEIL(BLOCK_SIZE, sizeof(iExtent));   // 此处无法整除，向上取整
     std::vector<iExtent> buf(cap);
     size_t to_copy = MIN(remain, cap);
 	for (int i = 0; i < to_copy; i++) buf[i] = exts[nd + i];
 	if (to_copy < cap) buf[to_copy] = iExtent{0, 0, 0};    // 结束标记
-	write_block(di.indirect_extent_block, buf.data());
+	write_block(di.indirect_extent_block, (const void*)buf.data());
 
     // log_info("store_all_extents() OVER");
 }
@@ -91,22 +92,29 @@ static uint64_t alloc_oneextent_from_group(int gid, uint64_t cnt, Extent &res)  
 
     BlockID bm_start, datablock_start;
 	get_group_by_gid(gid, &bm_start, &datablock_start);
-	// unsigned long bm[BMAPNUM_PERGROUP * BLOCK_SIZE / sizeof(unsigned long)];  // 读取该组的 bitmap
-    size_t bm_size_bytes = BMAPNUM_PERGROUP * BLOCK_SIZE;
-    // unsigned long* bm = (unsigned long*)smalloc(bm_size_bytes);
-    char* raw_buffer = new char[bm_size_bytes];
-    unsigned long* bm = reinterpret_cast<unsigned long*>(raw_buffer);
-    if (!bm) 
-    {
-        log_info("[ERROR] new() failed in alloc_extents_from_group");
-        return 0;
-    }
-    for (int j = 0; j < BMAPNUM_PERGROUP; ++j) read_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));
+
+    // 因为 BMAPNUM_PERGROUP 一般为 1，所以直接读取一个 block 即可  （不过可能需要将代码写得更通用些，考虑到 BMAPNUM_PERGROUP 可能大于 1 的情况）
+    BlockEntry* block;
+	read_block(bm_start, block);
+	unsigned long* bm = reinterpret_cast<unsigned long*>(block->data);
+
+
+	// // unsigned long bm[BMAPNUM_PERGROUP * BLOCK_SIZE / sizeof(unsigned long)];  // 读取该组的 bitmap
+    // size_t bm_size_bytes = BMAPNUM_PERGROUP * BLOCK_SIZE;
+    // // unsigned long* bm = (unsigned long*)smalloc(bm_size_bytes);
+    // char* raw_buffer = new char[bm_size_bytes];
+    // unsigned long* bm = reinterpret_cast<unsigned long*>(raw_buffer);
+    // if (!bm) 
+    // {
+    //     log_info("[ERROR] new() failed in alloc_extents_from_group");
+    //     return 0;
+    // }
+    // for (int j = 0; j < BMAPNUM_PERGROUP; ++j) read_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));
     
     if (bitmap_popcount(bm, DATABLOCKS_PERGROUP) == DATABLOCKS_PERGROUP) 
     {
-        // sfree(bm);
-        delete[] raw_buffer;
+        // // sfree(bm);
+        // delete[] raw_buffer;
         return 0;
     }
     if (cnt > (uint64_t)DATABLOCKS_PERGROUP) cnt = DATABLOCKS_PERGROUP;
@@ -125,10 +133,10 @@ static uint64_t alloc_oneextent_from_group(int gid, uint64_t cnt, Extent &res)  
         if ((!is_free && current_count > 0) || current_count == cnt)
         {
             res = Extent{ .physical_start = datablock_start + startbit, .block_count = current_count };
-            bitmap_set_range(bm, startbit, current_count, 1);
-            for (int j = 0; j < BMAPNUM_PERGROUP; ++j) write_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));   // 其实可以优化为“只回写受影响块”
+            bitmap_set_range(bm, startbit, current_count, 1); // 直接修改 block cache 中的 block 内容
+            // for (int j = 0; j < BMAPNUM_PERGROUP; ++j) write_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));   // 其实可以优化为“只回写受影响块”
             // sfree(bm);
-            delete[] raw_buffer;
+            // delete[] raw_buffer;
             return current_count;
         }
     }
@@ -136,16 +144,16 @@ static uint64_t alloc_oneextent_from_group(int gid, uint64_t cnt, Extent &res)  
     if (current_count > 0)
     {
         res = Extent{ .physical_start = datablock_start + startbit, .block_count = current_count };
-        bitmap_set_range(bm, startbit, current_count, 1);
-        for (int j = 0; j < BMAPNUM_PERGROUP; ++j) write_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));  // 其实可以优化为“只回写受影响块”
-        // sfree(bm);
-        delete[] raw_buffer;
+        bitmap_set_range(bm, startbit, current_count, 1); // 直接修改 block cache 中的 block 内容
+        // for (int j = 0; j < BMAPNUM_PERGROUP; ++j) write_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));  // 其实可以优化为“只回写受影响块”
+        // // sfree(bm);
+        // delete[] raw_buffer;
         return current_count;
     }
 
     // 理论上不会执行到这里（因为若该 group 中已不存在空闲块，则会在 bitmap_popcount() 判断中即return）
     // sfree(bm);
-    delete[] raw_buffer;
+    // delete[] raw_buffer;
     return 0; 
 }
 
@@ -176,22 +184,29 @@ static uint64_t alloc_extents_from_group(int gid, uint64_t cnt, std::vector<Exte
 
     BlockID bm_start, datablock_start;
 	get_group_by_gid(gid, &bm_start, &datablock_start);
-	// unsigned long bm[BMAPNUM_PERGROUP * BLOCK_SIZE / sizeof(unsigned long)];  // 读取该组的 bitmap
-    size_t bm_size_bytes = BMAPNUM_PERGROUP * BLOCK_SIZE;
-    char* raw_buffer = new char[bm_size_bytes];
-    unsigned long* bm = reinterpret_cast<unsigned long*>(raw_buffer);
-    // unsigned long* bm = (unsigned long*)smalloc(bm_size_bytes);
-    if (!bm) 
-    {
-        log_info("[ERROR] new() failed in alloc_extents_from_group");
-        return 0;
-    }
-    for (int j = 0; j < BMAPNUM_PERGROUP; j++) read_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));
+
+    // 因为 BMAPNUM_PERGROUP 一般为 1，所以直接读取一个 block 即可  （不过可能需要将代码写得更通用些，考虑到 BMAPNUM_PERGROUP 可能大于 1 的情况）
+    BlockEntry* block;
+	read_block(bm_start, block);
+	unsigned long* bm = reinterpret_cast<unsigned long*>(block->data);
+
+
+	// // unsigned long bm[BMAPNUM_PERGROUP * BLOCK_SIZE / sizeof(unsigned long)];  // 读取该组的 bitmap
+    // size_t bm_size_bytes = BMAPNUM_PERGROUP * BLOCK_SIZE;
+    // char* raw_buffer = new char[bm_size_bytes];
+    // unsigned long* bm = reinterpret_cast<unsigned long*>(raw_buffer);
+    // // unsigned long* bm = (unsigned long*)smalloc(bm_size_bytes);
+    // if (!bm) 
+    // {
+    //     log_info("[ERROR] new() failed in alloc_extents_from_group");
+    //     return 0;
+    // }
+    // for (int j = 0; j < BMAPNUM_PERGROUP; j++) read_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));
     
     if (bitmap_popcount(bm, DATABLOCKS_PERGROUP) == DATABLOCKS_PERGROUP) 
     {
-        // sfree(bm);
-        delete[] raw_buffer;
+        // // sfree(bm);
+        // delete[] raw_buffer;
         return 0;
     }
 
@@ -225,9 +240,9 @@ static uint64_t alloc_extents_from_group(int gid, uint64_t cnt, std::vector<Exte
         taken += current_count;
     }
 
-    for (int j = 0; j < BMAPNUM_PERGROUP; j++) write_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));  // 其实可以优化为“只回写受影响块”（不过如果bitmap只有1块就无所谓了）
-    // sfree(bm);
-    delete[] raw_buffer;
+    // for (int j = 0; j < BMAPNUM_PERGROUP; j++) write_block(bm_start + j, bm + j * BLOCK_SIZE / sizeof(unsigned long));  // 其实可以优化为“只回写受影响块”（不过如果bitmap只有1块就无所谓了）
+    // // sfree(bm);
+    // delete[] raw_buffer;
     return taken;
 }
 
@@ -267,26 +282,31 @@ void free_oneextent(iExtent &e, uint64_t startblk)  // free_oneextent(e, 0) 即�
     get_group_by_blkid(start_to_free, &gid, &bm_start, &datablock_start);
     // log_info("group id: %d, bm_start: %llu, datablock_start: %llu", gid, bm_start, datablock_start);
     
-    // DEFINE_BITMAP(bm, BMAPNUM_PERGROUP * BLOCK_SIZE * 8);
-    size_t bm_size_bytes = BMAPNUM_PERGROUP * BLOCK_SIZE;
-    // unsigned long* bm = (unsigned long*)smalloc(bm_size_bytes);
-    char* raw_buffer = new char[bm_size_bytes];
-    unsigned long* bm = reinterpret_cast<unsigned long*>(raw_buffer);
-    if (!bm) 
-    {
-        log_info("[ERROR] new() failed in free_oneextent");
-        return;
-    }
-    for (int j = 0; j < BMAPNUM_PERGROUP; j++) read_block(bm_start + j, (char*)bm + j * BLOCK_SIZE);
+
+    BlockEntry* block;
+	read_block(bm_start, block);
+	unsigned long* bm = reinterpret_cast<unsigned long*>(block->data);
+
+    // // DEFINE_BITMAP(bm, BMAPNUM_PERGROUP * BLOCK_SIZE * 8);
+    // size_t bm_size_bytes = BMAPNUM_PERGROUP * BLOCK_SIZE;
+    // // unsigned long* bm = (unsigned long*)smalloc(bm_size_bytes);
+    // char* raw_buffer = new char[bm_size_bytes];
+    // unsigned long* bm = reinterpret_cast<unsigned long*>(raw_buffer);
+    // if (!bm) 
+    // {
+    //     log_info("[ERROR] new() failed in free_oneextent");
+    //     return;
+    // }
+    // for (int j = 0; j < BMAPNUM_PERGROUP; j++) read_block(bm_start + j, (char*)bm + j * BLOCK_SIZE);
 
     uint64_t bit_offset = start_to_free - datablock_start;
     bitmap_set_range(bm, bit_offset, count_to_free, 0);
-    for (int j = 0; j < BMAPNUM_PERGROUP; j++) write_block(bm_start + j, (char*)bm + j * BLOCK_SIZE);  // 其实可以优化为“只回写受影响块”（不过如果bitmap只有1块就无所谓了）
+    // for (int j = 0; j < BMAPNUM_PERGROUP; j++) write_block(bm_start + j, (char*)bm + j * BLOCK_SIZE);  // 其实可以优化为“只回写受影响块”（不过如果bitmap只有1块就无所谓了）
 
     e.block_count = startblk;
 
     // sfree(bm);
-    delete[] raw_buffer;
+    // delete[] raw_buffer;
     // log_info("free_oneextent() OVER");
 }
 

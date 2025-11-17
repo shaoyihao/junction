@@ -32,6 +32,11 @@ using BlockCacheManager = ShardedLRUPtrSingleton<BlockID, BlockEntry>;
 
 
 void block_cache_init(size_t capacity = DEFAULT_CACHE_SIZE);
-void read_block(BlockID lba, void* out_buf);
+// void read_block(BlockID lba, void* out_buf);
+void read_block(BlockID lba, BlockEntry*& block);
 void write_block(BlockID lba, const void* in_buf);
-void flush_dirty_blocks();
+// void flush_dirty_blocks();
+
+extern "C" {
+    void flush_dirty_blocks();
+}

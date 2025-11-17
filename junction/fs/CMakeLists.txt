@@ -22,6 +22,7 @@ add_library(fs
   shaofs/extent.cc
 )
 
+target_include_directories(fs PRIVATE ${CMAKE_SOURCE_DIR}/lib/caladan/spdk/include)
 target_link_libraries(fs
   base
   bindings
